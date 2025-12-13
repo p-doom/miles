@@ -4,7 +4,7 @@
 # Miles Build Script (uv-only version)
 # 
 # This script uses uv for Python environment management and pip-installable
-# CUDA toolkit components instead of micromamba/conda.
+# CUDA toolkit components instead of micromamba/conda
 # 
 # PyTorch wheels come bundled with CUDA runtime, so we only need to install
 # the CUDA development tools (nvcc, headers, etc.) for packages that compile
