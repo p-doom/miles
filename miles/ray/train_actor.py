@@ -135,6 +135,10 @@ class TrainRayActor(RayActor):
         raise NotImplementedError
 
     def set_rollout_manager(self, rollout_manager):
+        print("set_rollout_manager")
         self.rollout_manager = rollout_manager
+        print("set_rollout_manager done")
         if self.args.rank == 0:
+            print("set_train_parallel_config")
             ray.get(self.rollout_manager.set_train_parallel_config.remote(self.train_parallel_config))
+            print("set_train_parallel_config done")

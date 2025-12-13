@@ -123,12 +123,14 @@ def allocate_train_group(args, num_nodes, num_gpus_per_node, pg):
 
 
 def create_training_models(args, pgs, rollout_manager):
+    print("DEBUG: allocating actor_model")
     actor_model = allocate_train_group(
         args=args,
         num_nodes=args.actor_num_nodes,
         num_gpus_per_node=args.actor_num_gpus_per_node,
         pg=pgs["actor"],
     )
+    print("DEBUG: allocated actor_model")
     if args.use_critic:
         critic_model = allocate_train_group(
             args=args,
@@ -136,26 +138,37 @@ def create_training_models(args, pgs, rollout_manager):
             num_gpus_per_node=args.critic_num_gpus_per_node,
             pg=pgs["critic"],
         )
+        print("DEBUG: allocated critic_model")
         critic_init_handle = critic_model.async_init(args, role="critic", with_ref=False)
+        print("DEBUG: initialized critic_init_handle")
     else:
         critic_model = None
+        print("DEBUG: critic_model is None")
 
     start_rollout_ids = ray.get(
         actor_model.async_init(args, role="actor", with_ref=args.kl_coef != 0 or args.use_kl_loss)
     )
+    print("DEBUG: got start_rollout_ids")
 
     assert len(set(start_rollout_ids)) == 1
+    print("DEBUG: asserted start_rollout_ids length")
     if args.start_rollout_id is None:
         args.start_rollout_id = start_rollout_ids[0]
+        print("DEBUG: set args.start_rollout_id")
 
     if args.use_critic:
         ray.get(critic_init_handle)
+        print("DEBUG: got critic_init_handle")
         actor_model.connect(critic_model)
+        print("DEBUG: connected actor_model to critic_model")
 
     actor_model.set_rollout_manager(rollout_manager)
+    print("DEBUG: set rollout_manager for actor_model")
     if args.rollout_global_dataset:
         ray.get(rollout_manager.load.remote(args.start_rollout_id - 1))
+        print("DEBUG: loaded rollout_manager data")
 
+    print("DEBUG: returning actor_model and critic_model")
     return actor_model, critic_model
 
 

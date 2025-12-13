@@ -1,18 +1,29 @@
-    
 #!/bin/bash
 
-# --- CLEANUP PREVIOUS RUNS ---
+# for rerun the task
 pkill -9 sglang
 sleep 3
 ray stop --force
 pkill -9 ray
 pkill -9 python
 sleep 3
-# Double tap to be sure
 pkill -9 ray
 pkill -9 python
 
-set -ex
+# set -ex
+
+# will prevent ray from buffering stdout/stderr
+export PYTHONUNBUFFERED=1
+export CUDA_VISIBLE_DEVICES=0,1
+
+NVLINK_COUNT=$(nvidia-smi | grep -o "NVLink" | wc -l)
+if [ "$NVLINK_COUNT" -gt 0 ]; then
+    HAS_NVLINK=1
+else
+    HAS_NVLINK=0
+fi
+echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
+
 
 # --- 1. DYNAMIC HOST IP DETECTION (CRITICAL FOR SLURM) ---
 # Don't hardcode IP. Get the actual IP of the current node.
@@ -24,26 +35,22 @@ echo "Detected Head Node IP: ${HEAD_NODE_IP}"
 export no_proxy="${HEAD_NODE_IP},localhost,127.0.0.1,0.0.0.0"
 export NO_PROXY="${HEAD_NODE_IP},localhost,127.0.0.1,0.0.0.0"
 
-export PYTHONBUFFERED=16
-
-# Check NVLink
-NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
-if [ "$NVLINK_COUNT" -gt 0 ]; then
-    HAS_NVLINK=1
-else
-    HAS_NVLINK=0
-fi
+# --- 3. DEBUGGING & STABILITY ENV VARS ---
+# Force NCCL/Distributed into a robust mode to prevent initialization hangs
+# export NCCL_P2P_DISABLE=1
+# export NCCL_IB_DISABLE=1
+export NCCL_DEBUG=INFO
+export TORCH_DISTRIBUTED_DEBUG=INFO
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/qwen3-0.6B.sh"
 
+RUN_ID=${RUN_ID:-"run_$(date +%Y%m%d_%H%M%S)"}
+LOAD_SAVE_PATH="/fast/project/HFMI_SynergyUnit/tab_model/huggingface/shared_data/${RUN_ID}/checkpoints"
 
 CKPT_ARGS=(
-   --hf-checkpoint /fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-0.6B/
-   --ref-load /fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-0.6B_torch_dist
-   --load /fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-0.6B_miles/
-   --save /fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-0.6B_miles/
-   --save-interval 1000
+   --hf-checkpoint /fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-0.6B
+   --load /fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-0.6B
+   --ref-load /fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-0.6B
 )
 
 SFT_ARGS=(
@@ -62,59 +69,56 @@ SFT_ARGS=(
    --debug-train-only
 )
 
-PERF_ARGS=(
-   --tensor-model-parallel-size 1
-   --sequence-parallel
-   --pipeline-model-parallel-size 1
-   --context-parallel-size 1
-   --expert-model-parallel-size 1
-   --expert-tensor-parallel-size 1
-
-   --recompute-granularity full
-   --recompute-method uniform
-   --recompute-num-layers 1
-
-   # --micro-batch-size 1
-   --use-dynamic-batch-size
-   --max-tokens-per-gpu 9216
-)
-
 OPTIMIZER_ARGS=(
    --optimizer adam
    --lr 1e-5
-   --lr-decay-style cosine
-   --min-lr 1e-6
-   --lr-warmup-fraction 0.1
+   --lr-decay-style constant
    --weight-decay 0.1
    --adam-beta1 0.9
-   --adam-beta2 0.95
+   --adam-beta2 0.98
 )
 
 WANDB_ARGS=(
    --use-wandb
    --wandb-project crowd-pilot-miles
    --wandb-team instant-uv
-   --wandb-group qwen3-4B-base-sft
-   # --wandb-key ${WANDB_KEY}
+   --wandb-group qwen3-0.6b-sft-torch
+)
+
+SGLANG_ARGS=(
+   
+)
+
+TRAIN_BACKEND_ARGS=(
+   --train-backend fsdp
+   --update-weight-buffer-size 536870912
+   --gradient-checkpointing
+   --attn-implementation flash_attention_3
+   --train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}'
+   --actor-num-gpus-per-node 2
+)
+
+PERF_ARGS=(
+   --use-dynamic-batch-size
+   --max-tokens-per-gpu 9216
 )
 
 MISC_ARGS=(
-   # default dropout in megatron is 0.1
-   --attention-dropout 0.0
-   --hidden-dropout 0.0
-   # should be good for model performance
-   --accumulate-allreduce-grads-in-fp32
-   --attention-softmax-in-fp32
-   # need to comment this when using model with MLA
-   --attention-backend flash
+   --actor-num-nodes 1
+   --actor-num-gpus-per-node 2
+   --rollout-batch-size 128
+   --colocate
+   --use-fault-tolerance
+   --dump-details /fast/project/HFMI_SynergyUnit/tab_model/huggingface/shared_data/qwen3-600M-fsdp-1116-noref/dump_details
 )
 
-# --- 3. START RAY HEAD ---
-# Use the dynamic IP detected above
-ray start --head \
+# launch the master node of ray in container - 2 GPUs for training
+export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
+python3 -m ray.scripts.scripts start --head \
     --node-ip-address=${HEAD_NODE_IP} \
     --num-gpus 2 \
-    --num-cpus=4 \
+    --num-cpus 4 \
+    --memory=214748364800 \
     --disable-usage-stats \
     --dashboard-host=0.0.0.0 \
     --dashboard-port=8265 \
@@ -135,8 +139,6 @@ done
 # Add a small safety buffer
 sleep 5
 
-# --- 5. SUBMIT JOB ---
-
 # Build runtime env
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
@@ -147,17 +149,17 @@ RUNTIME_ENV_JSON="{
   }
 }"
 
-# Submit using the dynamic IP
-ray job submit --address="http://${HEAD_NODE_IP}:8265" \
+python3 -m ray.scripts.scripts job submit --address="http://${HEAD_NODE_IP}:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
-   -- python3 train_async.py \
-   --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 2 \
-   ${MODEL_ARGS[@]} \
+   -- python3 train.py \
    ${CKPT_ARGS[@]} \
    ${SFT_ARGS[@]} \
    ${OPTIMIZER_ARGS[@]} \
    ${WANDB_ARGS[@]} \
+   ${SGLANG_ARGS[@]} \
+   ${TRAIN_BACKEND_ARGS[@]} \
    ${PERF_ARGS[@]} \
-   ${EVAL_ARGS[@]} \
    ${MISC_ARGS[@]}
+
+
+

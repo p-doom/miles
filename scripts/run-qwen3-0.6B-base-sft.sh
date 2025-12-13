@@ -13,7 +13,7 @@ pkill -9 python
 set -ex
 
 # will prevent ray from buffering stdout/stderr
-export PYTHONBUFFERED=16
+export PYTHONUNBUFFERED=1
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
@@ -42,8 +42,8 @@ SFT_ARGS=(
    --input-key messages
    --rollout-shuffle
    --num-epoch 3
-   --rollout-batch-size 1
-   --global-batch-size 1
+   --rollout-batch-size 64
+   --global-batch-size 64
 
    --loss-type sft_loss
    --calculate-per-token-loss
@@ -98,8 +98,12 @@ MISC_ARGS=(
 )
 
 # launch the master node of ray in container
-export MASTER_ADDR=${MASTER_ADDR:-"10.86.2.50"}
-export no_proxy="10.86.2.50,${MASTER_ADDR}"
+export MASTER_ADDR=$(hostname -I | awk '{print $1}')
+echo "Detected Head Node IP: ${MASTER_ADDR}"
+
+export no_proxy="${MASTER_ADDR},localhost,127.0.0.1,0.0.0.0,10.86.2.50"
+export NO_PROXY="${MASTER_ADDR},localhost,127.0.0.1,0.0.0.0,10.86.2.50"
+
 ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 2 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 
@@ -109,11 +113,11 @@ RUNTIME_ENV_JSON="{
     \"PYTHONPATH\": \"/fast/project/HFMI_SynergyUnit/tab_model/Megatron-LM/\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
-    \"PYTORCH_CUDA_ALLOC_CONF\": \"expandable_segments:True\"
+   \"PYTORCH_CUDA_ALLOC_CONF\": \"expandable_segments:True\"
   }
 }"
 
-ray job submit --address="http://10.86.2.50:8265" \
+ray job submit --address="http://${MASTER_ADDR}:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train_async.py \
    --actor-num-nodes 1 \
