@@ -53,8 +53,7 @@ fi
 cd "$BASE_DIR"
 
 # Create virtual environment with Python 3.12
-# Ensure this matches the python version supported by the prebuilt wheels below
-# uv venv --python 3.12 miles-venv
+uv venv --python 3.12 miles-venv
 
 # Activate the virtual environment
 source "$BASE_DIR/miles-venv/bin/activate"
@@ -68,10 +67,9 @@ echo "Installing PyTorch 2.8.0 with CUDA 12.6..."
 uv pip install cuda-python==12.6.0
 
 # Install PyTorch 2.8.0 for CUDA 12.6
-# Note: As of late 2025, CUDA 12.8 wheels are often in the 'test' or 'nightly' channel
 uv pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu126
 
-# Set TORCH_CUDA_ARCH_LIST for common modern GPU architectures
+# Set TORCH_CUDA_ARCH_LIST for our GPU architectures
 # 8.0 = A100 (Ampere), 9.0 = H100 (Hopper)
 export TORCH_CUDA_ARCH_LIST="8.0;9.0"
 
