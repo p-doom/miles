@@ -42,61 +42,37 @@ class RolloutManager:
 
     def __init__(self, args, pg):
         configure_logger()
-        print("DEBUG: configure_logger() executed")
-
         self.args = args
-        print("DEBUG: self.args = args executed")
         self.pg = pg
-        print("DEBUG: self.pg = pg executed")
         _start_router(args)
-        print("DEBUG: _start_router(args) executed")
         # TODO make args immutable
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
-        print("DEBUG: init_tracking executed")
         init_http_client(args)
-        print("DEBUG: init_http_client(args) executed")
 
         data_source_cls = load_function(self.args.data_source_path)
-        print("DEBUG: data_source_cls loaded")
         self.data_source = data_source_cls(args)
-        print("DEBUG: self.data_source initialized")
 
         self.generate_rollout = load_function(self.args.rollout_function_path)
-        print("DEBUG: self.generate_rollout loaded")
         self.eval_generate_rollout = load_function(self.args.eval_function_path)
-        print("DEBUG: self.eval_generate_rollout loaded")
         self.custom_reward_post_process_func = None
-        print("DEBUG: self.custom_reward_post_process_func initialized to None")
         if self.args.custom_reward_post_process_path is not None:
             self.custom_reward_post_process_func = load_function(self.args.custom_reward_post_process_path)
-            print("DEBUG: self.custom_reward_post_process_func loaded")
         logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
-        print("DEBUG: logger.info for generate_rollout executed")
         logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
-        print("DEBUG: logger.info for eval_generate_rollout executed")
 
         if self.args.debug_train_only:
             self.all_rollout_engines = []
-            print("DEBUG: self.all_rollout_engines initialized as empty list (debug_train_only)")
         else:
             num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
-            print("DEBUG: num_gpu_per_engine calculated")
             num_engines = args.rollout_num_gpus // num_gpu_per_engine
-            print("DEBUG: num_engines calculated")
             self.all_rollout_engines = [None] * num_engines
-            print("DEBUG: self.all_rollout_engines initialized with None placeholders")
         self.num_new_engines = init_rollout_engines(args, pg, self.all_rollout_engines)
-        print("DEBUG: self.num_new_engines initialized")
         self.nodes_per_engine = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
-        print("DEBUG: self.nodes_per_engine calculated")
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
-        print("DEBUG: self.rollout_engine_lock initialized")
 
         self._metric_checker = MetricChecker.maybe_create(args)
-        print("DEBUG: self._metric_checker initialized")
         if self.args.use_fault_tolerance:
             self._health_monitor = RolloutHealthMonitor(self, args)
-            print("DEBUG: self._health_monitor initialized")
 
     def dispose(self):
         if self._metric_checker is not None:
@@ -116,33 +92,20 @@ class RolloutManager:
         return len(self.data_source.dataset) // self.args.rollout_batch_size
 
     def generate(self, rollout_id):
-        print("DEBUG: generate method started")
         monitor_started = self.args.use_fault_tolerance and self._health_monitor.start()
-        if monitor_started:
-            print("DEBUG: Health monitor started")
         start_time = time.time()
         try:
-            print("DEBUG: Calling _get_rollout_data")
             data, metrics = self._get_rollout_data(rollout_id=rollout_id)
-            print(f"DEBUG: _get_rollout_data returned. Data and metrics obtained. Got {len(data)} samples from rollout to train")
             self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=False)
-            print("DEBUG: _save_debug_rollout_data called.")
             _log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
-            print("DEBUG: _log_rollout_data called.")
             data = self._convert_samples_to_train_data(data)
-            print("DEBUG: _convert_samples_to_train_data called. Data converted.")
             return self._split_train_data_by_dp(data, self.train_parallel_config["dp_size"])
         finally:
-            print("DEBUG: Entering finally block of generate method")
             if monitor_started:
                 self._health_monitor.stop()
-                print("DEBUG: Health monitor stopped")
                 self.num_new_engines = init_rollout_engines(self.args, self.pg, self.all_rollout_engines)
-                print(f"DEBUG: init_rollout_engines called. num_new_engines: {self.num_new_engines}")
             else:
                 self.num_new_engines = 0
-                print(f"DEBUG: Health monitor not started or already stopped. num_new_engines: {self.num_new_engines}")
-            print("DEBUG: generate method finished")
 
     def eval(self, rollout_id):
         if self.args.debug_train_only:

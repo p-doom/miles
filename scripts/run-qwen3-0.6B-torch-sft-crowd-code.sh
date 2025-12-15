@@ -76,7 +76,7 @@ OPTIMIZER_ARGS=(
    --lr-decay-style WSD
    --lr-wsd-decay-style linear
    --lr-warmup-iters 100
-   --lr-decay-iters 1900
+   --lr-decay-iters 2000
    --lr-wsd-decay-iters 500
    --weight-decay 0.1
    --adam-beta1 0.9
