@@ -50,10 +50,10 @@ fi
 cd "$BASE_DIR"
 
 # Create virtual environment with Python 3.12
-uv venv --python 3.12 miles-venv
+uv venv --python 3.12 
 
 # Activate the virtual environment
-source "$BASE_DIR/miles-venv/bin/activate"
+source "$BASE_DIR/.venv/bin/activate"
 
 # =============================================================================
 # Install PyTorch with CUDA 12.8
