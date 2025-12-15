@@ -15,7 +15,7 @@
 
 set -e  # Exit on error
 
-BASE_DIR="$(pwd)" # change this to your base directory
+BASE_DIR="" # change this to your base directory. Ideally the parent directory of miles
 
 if [ -z "$BASE_DIR" ]; then
     echo "BASE_DIR is not set. Please set it to proceed with the installation."
@@ -50,14 +50,13 @@ fi
 # =============================================================================
 # Create Python virtual environment with uv
 # =============================================================================
-cd "$BASE_DIR"
-
 # Create virtual environment with Python 3.12
 uv venv --python 3.12
 
 # Activate the virtual environment
-source "$BASE_DIR/.venv/bin/activate"
+source ".venv/bin/activate"
 
+cd "$BASE_DIR"
 # =============================================================================
 # Install PyTorch with CUDA 12.6
 # =============================================================================
