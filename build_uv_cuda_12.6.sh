@@ -15,7 +15,7 @@
 
 set -e  # Exit on error
 
-BASE_DIR=""
+BASE_DIR="/p/home/jusers/mahajan1/juwels/projects/mahajan1/miles"
 
 if [ -z "$BASE_DIR" ]; then
     echo "BASE_DIR is not set. Please set it to proceed with the installation."
@@ -27,6 +27,9 @@ fi
 # =============================================================================
 echo "Loading CUDA 12.6 module..."
 module load CUDA/12
+module load cuDNN/9.5.0.50-CUDA-12
+module load NCCL/default-CUDA-12
+module load Clang/18.1.8
 
 # Verify NVCC is in path
 if ! command -v nvcc &> /dev/null; then
@@ -51,7 +54,7 @@ cd "$BASE_DIR"
 
 # Create virtual environment with Python 3.12
 # Ensure this matches the python version supported by the prebuilt wheels below
-uv venv --python 3.12 miles-venv
+# uv venv --python 3.12 miles-venv
 
 # Activate the virtual environment
 source "$BASE_DIR/miles-venv/bin/activate"
@@ -162,6 +165,10 @@ if [ ! -d "$BASE_DIR/miles" ]; then
     cd miles/
     export MILES_DIR="$BASE_DIR/miles"
     uv pip install -e .
+elif [ -f "$BASE_DIR/pyproject.toml" ]; then
+    export MILES_DIR="$BASE_DIR"
+    cd "$MILES_DIR"
+    uv pip install -e .
 else
     export MILES_DIR="$BASE_DIR/miles"
     cd "$MILES_DIR"
@@ -183,10 +190,12 @@ echo "==========================================================================
 echo "Installation complete!"
 echo ""
 echo "To activate the environment, run:"
-echo "  module load CUDA/12.8"
-echo "  source $BASE_DIR/miles-venv/bin/activate"
+echo "  module load CUDA/12"
+echo "  module load cuDNN/9.5.0.50-CUDA-12"
+echo "  module load NCCL/default-CUDA-12"
+echo "  source $BASE_DIR/venv/bin/activate"
 echo ""
-echo "Environment configured using System CUDA from 'module load CUDA/12.8'"
-echo "PyTorch Version: 2.8.0 (cu128)"
+echo "Environment configured using System CUDA from 'module load CUDA/12'"
+echo "PyTorch Version: 2.8.0 (cu126)"
 echo "CUDA_HOME: $CUDA_HOME"
 echo "============================================================================="
