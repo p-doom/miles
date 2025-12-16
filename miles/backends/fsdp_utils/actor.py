@@ -822,7 +822,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 # Log learning rate per parameter group; use scheduler's last computed LRs
                 lr_values = self.lr_scheduler.get_last_lr()
                 for gid, _group in enumerate(self.optimizer.param_groups):
-                    log_dict[f"train/lr-pg_{gid}"] = lr_values[gid]
+                    log_dict[f"train/lr_{gid}"] = lr_values[gid]
 
                 kl_info = ""
                 if self.args.use_kl_loss and "kl_loss" in aggregated:
