@@ -15,7 +15,7 @@
 
 set -e  # Exit on error
 
-BASE_DIR="$(pwd)/.." # change this to your base directory. Ideally the parent directory of miles
+BASE_DIR="" # change this to your base directory. Ideally the parent directory of miles
 
 if [ -z "$BASE_DIR" ]; then
     echo "BASE_DIR is not set. Please set it to proceed with the installation."
