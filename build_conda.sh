@@ -1,24 +1,19 @@
 #!/bin/bash
 
-BASE_DIR=""
-
-if [ -z "$BASE_DIR" ]; then
-    echo "BASE_DIR is not set. Please set it to proceed with the installation."
-    exit 1
-fi
+set -ex
 
 # create conda
 yes '' | "${SHELL}" <(curl -L micro.mamba.pm/install.sh)
 export PS1=tmp
-mkdir -p $BASE_DIR/.cargo/
-touch $BASE_DIR/.cargo/env
+mkdir -p /root/.cargo/
+touch /root/.cargo/env
 source ~/.bashrc
 
 micromamba create -n miles python=3.12 pip -c conda-forge -y
 micromamba activate miles
 export CUDA_HOME="$CONDA_PREFIX"
-export CPATH=$CUDA_HOME/targets/x86_64-linux/include:$CPATH
 
+export BASE_DIR=${BASE_DIR:-"/root"}
 cd $BASE_DIR
 
 # install cuda 12.9 as it's the default cuda version for torch
@@ -40,19 +35,14 @@ pip install -e "python[all]"
 pip install cmake ninja
 
 # flash attn
-cd $BASE_DIR
-pip install flash_attn_3 --find-links https://windreamer.github.io/flash-attention3-wheels/cu129_torch280 --extra-index-url https://download.pytorch.org/whl/cu129
-
-# flash attn
 # the newest version megatron supports is v2.7.4.post1
-# MAX_JOBS=64 pip -v install flash-attn==2.7.4.post1 --no-build-isolation
-pip install https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.3.18/flash_attn-2.7.4%2Bcu128torch2.8-cp312-cp312-linux_x86_64.whl
+MAX_JOBS=64 pip -v install flash-attn==2.7.4.post1 --no-build-isolation
 
 pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
-pip install --no-build-isolation "transformer_engine[pytorch]==2.8.0" --no-cache-dir
+pip install --no-build-isolation "transformer_engine[pytorch]==2.8.0"
 pip install flash-linear-attention==0.4.0
 NVCC_APPEND_FLAGS="--threads 4" \
-pip -v install --disable-pip-version-check --no-cache-dir \
+  pip -v install --disable-pip-version-check --no-cache-dir \
   --no-build-isolation \
   --config-settings "--build-option=--cpp_ext --cuda_ext --parallel 8" git+https://github.com/NVIDIA/apex.git@10417aceddd7d5d05d7cbf7b0fc2daad1105f8b4
 
@@ -69,11 +59,6 @@ cd $BASE_DIR
 git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
   cd Megatron-LM/ && git checkout core_v0.14.0 && \
   pip install -e .
-
-pip install sglang_router
-pip install ring_flash_attn
-pip install -U "ray[data,train,tune,serve]"
-pip install pylatexenc
 
 # install miles and apply patches
 
