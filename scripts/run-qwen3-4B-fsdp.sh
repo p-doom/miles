@@ -31,16 +31,16 @@ echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
 RUN_ID=${RUN_ID:-"run_$(date +%Y%m%d_%H%M%S)"}
-LOAD_SAVE_PATH="/fast/project/HFMI_SynergyUnit/tab_model/huggingface/shared_data/${RUN_ID}/checkpoints"
+LOAD_SAVE_PATH="/root/shared_data/${RUN_ID}/checkpoints"
 
 CKPT_ARGS=(
-   --hf-checkpoint /fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-4B
-   --load /fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-4B
-   --ref-load /fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-4B
+   --hf-checkpoint /root/Qwen3-4B
+   --load /root/Qwen3-4B
+   --ref-load /root/Qwen3-4B
 )
 
 ROLLOUT_ARGS=(
-   --prompt-data /fast/project/HFMI_SynergyUnit/tab_model/huggingface/dapo-math-17k/dapo-math-17k.jsonl
+   --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt
    --label-key label
    --apply-chat-template
@@ -108,7 +108,7 @@ MISC_ARGS=(
    --actor-num-gpus-per-node 8
    --colocate
    --use-fault-tolerance
-   --dump-details /fast/project/HFMI_SynergyUnit/tab_model/huggingface/shared_data/qwen3-4B-fsdp-1116-noref/dump_details
+   --dump-details /root/shared_data/qwen3-4B-fsdp-1116-noref/dump_details
    # --fsdp-cpu-offload
 )
 
@@ -119,7 +119,7 @@ ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-s
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
-    \"PYTHONPATH\": \"/fast/project/HFMI_SynergyUnit/tab_model/huggingface/Megatron-LM/:${SCRIPT_DIR}\",
+    \"PYTHONPATH\": \"/root/Megatron-LM/:${SCRIPT_DIR}\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\"
   }
 }"
