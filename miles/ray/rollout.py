@@ -42,6 +42,7 @@ class RolloutManager:
 
     def __init__(self, args, pg):
         configure_logger()
+
         self.args = args
         self.pg = pg
         _start_router(args)
@@ -276,9 +277,7 @@ class RolloutManager:
         return train_data
 
     def set_train_parallel_config(self, config: dict):
-        print("set_train_parallel_config")
         self.train_parallel_config = config
-        print("set_train_parallel_config done")
 
     def _split_train_data_by_dp(self, data, dp_size):
         """Split the train data by data parallel size."""

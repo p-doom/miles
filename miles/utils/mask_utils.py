@@ -50,6 +50,7 @@ class MultiTurnLossMaskGenerator:
 
         for i, message in enumerate(messages):
             message_ids = self.tokenizer.apply_chat_template([message], tokenize=True)
+
             if message["role"] != "system" and i > 0:
                 message_ids = message_ids[self.system_message_length :]
 
