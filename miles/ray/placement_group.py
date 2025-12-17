@@ -122,7 +122,7 @@ def allocate_train_group(args, num_nodes, num_gpus_per_node, pg):
     )
 
 
-def create_training_models(args, pgs, rollout_manager):
+def create_training_models(args, pgs, rollout_manager, val_rollout_manager=None):
     actor_model = allocate_train_group(
         args=args,
         num_nodes=args.actor_num_nodes,
@@ -152,18 +152,18 @@ def create_training_models(args, pgs, rollout_manager):
         ray.get(critic_init_handle)
         actor_model.connect(critic_model)
 
-    actor_model.set_rollout_manager(rollout_manager)
+    actor_model.set_rollout_manager(rollout_manager, val_rollout_manager)
     if args.rollout_global_dataset:
         ray.get(rollout_manager.load.remote(args.start_rollout_id - 1))
 
     return actor_model, critic_model
 
 
-def create_rollout_manager(args, pg):
+def create_rollout_manager(args, pg, prompt_data):
     rollout_manager = RolloutManager.options(
         num_cpus=1,
         num_gpus=0,
-    ).remote(args, pg)
+    ).remote(args, pg, prompt_data)
 
     # calculate num_rollout from num_epoch
     num_rollout_per_epoch = None

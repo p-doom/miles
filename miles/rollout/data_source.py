@@ -42,7 +42,7 @@ class DataSource(abc.ABC):
 
 # TODO may further refactor data-loading part later
 class RolloutDataSource(DataSource):
-    def __init__(self, args):
+    def __init__(self, args, prompt_data):
         self.args = args
 
         self.epoch_id = 0
@@ -63,7 +63,7 @@ class RolloutDataSource(DataSource):
                     processor.save_pretrained(Path(d) / "processor")
 
             self.dataset = Dataset(
-                args.prompt_data,
+                prompt_data,
                 tokenizer=tokenizer,
                 processor=processor,
                 max_length=args.rollout_max_prompt_len,
@@ -155,8 +155,8 @@ class RolloutDataSource(DataSource):
 
 
 class RolloutDataSourceWithBuffer(RolloutDataSource):
-    def __init__(self, args):
-        super().__init__(args)
+    def __init__(self, args, prompt_data):
+        super().__init__(args, prompt_data)
         self.buffer = []
         if self.args.buffer_filter_path is None:
             self.buffer_filter = pop_first

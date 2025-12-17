@@ -749,6 +749,7 @@ class FSDPTrainRayActor(TrainRayActor):
         return kl_term
 
     def _train_step(self, packed_batch, reported_accum, mbs_id, grad_accum):
+        self.model.train()
         # Prepare model inputs
         model_args = self._get_model_inputs_args(packed_batch)
         logits = self.model(**model_args).logits.squeeze(0).float()
@@ -833,6 +834,203 @@ class FSDPTrainRayActor(TrainRayActor):
                 log_dict["train/step"] = self.global_step
                 tracking_utils.log(self.args, log_dict, step_key="train/step")
             self.global_step += 1
+
+    def _prepare_val_batches(self, rollout_data: dict[str, list]):
+        """Pack variable-length sequences for efficient processing.
+
+        Parameters:
+            rollout_data: Dictionary of lists containing sequence-level tensors
+                such as `tokens`, `loss_masks`, `rewards`, `response_lengths`,
+                `advantages`, `returns`, and optional `rollout_log_probs`.
+
+        Returns:
+           `packed_batches`: A list of packed batch dictionaries.
+        """
+        # Pack sequences efficiently
+        tokens = rollout_data["tokens"]
+
+        packed_batches = []
+        mbs_size_list = []
+        local_batch_size = (self.args.global_batch_size * self.args.val_steps) // self.dp_size
+        assert (
+            self.args.global_batch_size % self.dp_size == 0
+        ), f"global_batch_size {self.args.global_batch_size} is not divisible by dp_world_size {self.dp_size}"
+        # Use global_batch_size for splitting when max_tokens_per_gpu is enabled
+        if self.args.use_dynamic_batch_size:
+            # In CP mode, CP group shares sequences, so total capacity is max_tokens_per_gpu * cp_size
+            max_tokens = self.args.max_tokens_per_gpu
+            if self.cp_size > 1:
+                max_tokens = max_tokens * self.cp_size
+
+            for i in range(0, len(tokens), local_batch_size):
+                mbs_size_list.append(
+                    get_minimum_num_micro_batch_size(
+                        [len(t) for t in rollout_data["tokens"][i : i + local_batch_size]],
+                        max_tokens,
+                    )
+                )
+            num_microbatches = torch.tensor(mbs_size_list, dtype=torch.int, device=torch.cuda.current_device())
+            dist.all_reduce(num_microbatches, op=dist.ReduceOp.MAX, group=self.dp_group)
+            num_microbatches = num_microbatches.tolist()
+        else:
+            num_microbatches = [(self.args.global_batch_size * self.args.val_steps) // (self.args.micro_batch_size * self.dp_size)] * (
+                len(tokens) // local_batch_size
+            )
+
+        start = 0
+        for mbs_size in num_microbatches:
+            end = start + local_batch_size
+            packed_batches.extend(
+                pack_sequences(
+                    rollout_data["tokens"][start:end],
+                    rollout_data["loss_masks"][start:end],
+                    rollout_data["rewards"][start:end],
+                    rollout_data["raw_reward"][start:end],
+                    rollout_data["response_lengths"][start:end],
+                    rollout_data["advantages"][start:end],
+                    rollout_data["returns"][start:end],
+                    rollout_log_probs=(
+                        rollout_data["rollout_log_probs"][start:end] if "rollout_log_probs" in rollout_data else None
+                    ),
+                    multimodal_inputs=(
+                        rollout_data["multimodal_inputs"][start:end] if "multimodal_inputs" in rollout_data else None
+                    ),
+                    num_packs=mbs_size,
+                )
+            )
+            start = end
+
+        return packed_batches
+
+    def val(self, rollout_id: int, rollout_data_ref_lst: list[Box]) -> None:
+        """Run one validation step over a rollout batch.
+
+        Parameters:
+            rollout_id: Monotonic id for logging.
+            rollout_data_ref_lst: A list of Box handles wrapping Ray object references to a
+                dictionary with rollout tensors and metadata (e.g., `tokens`,
+                `loss_masks`, `rewards`, `response_lengths`, optional
+                `rollout_log_probs`, etc.). It will be fetched and partitioned
+                by `process_rollout_data` based on data-parallel rank/size.
+        """
+        if self.args.offload_train:
+            self.wake_up()
+
+        with inverse_timer("train_wait"), timer("val"):
+            rollout_data = dict()
+            for rd in rollout_data_ref_lst:
+                rd_processed = process_rollout_data(self.args, rd, self.dp_rank, self.dp_size)
+                for k, v in rd_processed.items():
+                    rollout_data.setdefault(k, []).extend(v)
+
+            if self.args.debug_rollout_only:
+                return
+            self._val_core(rollout_id=rollout_id, rollout_data=rollout_data)
+
+        train_metric_utils.log_perf_data_raw(
+            rollout_id=rollout_id,
+            args=self.args,
+            is_primary_rank=dist.get_rank() == 0,
+            compute_total_fwd_flops=None,
+        )
+
+    def _val_core(self, rollout_id: int, rollout_data: dict) -> None:
+        if self.args.advantage_estimator in ["grpo", "gspo"]:
+            rollout_data["advantages"] = rollout_data["returns"] = [
+                torch.tensor([rollout_data["rewards"][i]] * rollout_data["response_lengths"][i])
+                for i in range(len(rollout_data["rewards"]))
+            ]
+        else:
+            raise NotImplementedError(f"Unsupported advantage_estimator {self.args.advantage_estimator}")
+
+        packed_batches = self._prepare_val_batches(rollout_data)
+
+        if self.ref_model is not None:
+            self._compute_log_prob("ref", packed_batches, store_prefix="ref_")
+
+        self._compute_log_prob("actor", packed_batches)
+        self._log_rollout_data(rollout_id, rollout_data, packed_batches)
+
+        with timer("actor_val"):
+            reported_accum: dict[str, list[torch.Tensor]] = {}
+            for _, packed_batch in self.prof.iterate_train_actor(
+                enumerate(tqdm(packed_batches, desc="actor_val", disable=dist.get_rank() != 0))
+            ):
+                reported = self._val_step(
+                    packed_batch=packed_batch,
+                )
+                # Accumulate reported metrics (store tensors for later mean)
+                for k, v in reported.items():
+                    reported_accum.setdefault(k, []).append(v)
+
+            # Aggregate logs
+            aggregated = {k: torch.stack(v).sum().item() for k, v in reported_accum.items()}
+            # TODO: change this, this is slow.
+            reduced_aggregated = [None] * self.dp_size
+            dist.all_gather_object(reduced_aggregated, aggregated, group=self.dp_group)
+            aggregated = {}
+            for k in reported_accum.keys():
+                aggregated[k] = sum([r[k] for r in reduced_aggregated]) / (self.args.global_batch_size * self.args.val_steps)
+            reported_accum.clear()
+            if dist.get_rank() == 0:
+                log_dict = {
+                    f"val/{k}": (val.item() if torch.is_tensor(val) else val) for k, val in aggregated.items()
+                }
+                kl_info = ""
+                if self.args.use_kl_loss and "kl_loss" in aggregated:
+                    kl_info = f", kl_loss: {aggregated['kl_loss']:.4f}, kl_penalty: {aggregated['kl_loss'] * self.args.kl_loss_coef:.4f}"
+                    logger.info(kl_info)
+                logger.info(f"step {self.global_step}: {log_dict}")
+
+                log_dict["val/step"] = self.global_step
+                tracking_utils.log(self.args, log_dict, step_key="val/step")
+
+        self.prof.step(rollout_id=rollout_id)
+
+        train_dump_utils.save_debug_train_data(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
+
+    def _val_step(self, packed_batch):
+        self.model.eval()
+        # Prepare model inputs
+        model_args = self._get_model_inputs_args(packed_batch)
+        with torch.no_grad():
+            logits = self.model(**model_args).logits.squeeze(0).float()
+
+        # Compute log probs and entropy (unified for both CP and non-CP modes)
+        log_probs, entropy_result = get_logprob_and_entropy_with_cp(
+            logits=logits,
+            target_tokens=packed_batch["tokens"],
+            cp_rank=self.cp_rank,
+            cp_size=self.cp_size,
+            cp_group=self.cp_group,
+            model_input_ids=model_args["input_ids"],
+            allow_compile=not self.args.true_on_policy_mode,
+            temperature=self.args.rollout_temperature,
+        )
+        packed_batch["cur_log_probs"] = log_probs
+        packed_batch["entropy"] = entropy_result
+
+        unpacked_batches = unpack_sequences(packed_batch)
+
+        old_log_prob_key = "rollout_log_probs" if self.args.use_rollout_logprobs else "log_probs"
+        missing_old_log_probs = [
+            idx
+            for idx, batch in enumerate(unpacked_batches)
+            if old_log_prob_key not in batch or not isinstance(batch[old_log_prob_key], torch.Tensor)
+        ]
+        if missing_old_log_probs:
+            raise KeyError(
+                f"{old_log_prob_key} must be provided as torch.Tensor for all microbatches when "
+                f"use_rollout_logprobs is set to {self.args.use_rollout_logprobs}. Missing in batches: {missing_old_log_probs}"
+            )
+
+        if self.args.loss_type == "sft_loss":
+            _ , reported = self._compute_sft_loss(unpacked_batches, logits)
+        else:
+            _ , reported = self._compute_policy_loss(unpacked_batches, logits)
+        
+        return reported
+
 
     @timer
     def update_weights(self) -> None:  # type: ignore[override]

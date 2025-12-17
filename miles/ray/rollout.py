@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 class RolloutManager:
     """The class to run rollout and convert rollout data to training data."""
 
-    def __init__(self, args, pg):
+    def __init__(self, args, pg, prompt_data):
         configure_logger()
 
         self.args = args
@@ -51,7 +51,7 @@ class RolloutManager:
         init_http_client(args)
 
         data_source_cls = load_function(self.args.data_source_path)
-        self.data_source = data_source_cls(args)
+        self.data_source = data_source_cls(args, prompt_data)
 
         self.generate_rollout = load_function(self.args.rollout_function_path)
         self.eval_generate_rollout = load_function(self.args.eval_function_path)

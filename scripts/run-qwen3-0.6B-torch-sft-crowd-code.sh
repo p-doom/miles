@@ -56,6 +56,9 @@ CKPT_ARGS=(
 SFT_ARGS=(
    --rollout-function-path miles.rollout.sft_rollout.generate_rollout
    --prompt-data /fast/project/HFMI_SynergyUnit/tab_model/huggingface/nemo_hf_part_jsonl_4k_tokens.parquet
+   --val-prompt-data /fast/project/HFMI_SynergyUnit/tab_model/huggingface/nemo_hf_part_jsonl_4k_tokens_validation.parquet
+   --val-interval 2
+   --val-steps 3
    --input-key messages
    --apply-chat-template
    --rollout-shuffle
@@ -82,6 +85,14 @@ OPTIMIZER_ARGS=(
    --adam-beta1 0.9
    --adam-beta2 0.98
 )
+
+# EVAL_ARGS=(
+   # --eval-interval 2
+   # --eval-prompt-data crowd-code /fast/project/HFMI_SynergyUnit/tab_model/huggingface/nemo_hf_part_jsonl_4k_tokens_validation.parquet
+   # --n-samples-per-eval-prompt 1
+   # --eval-max-response-len 8192
+   # --eval-top-p 0.7
+# )
 
 WANDB_ARGS=(
    --use-wandb
@@ -120,7 +131,7 @@ export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 python3 -m ray.scripts.scripts start --head \
     --node-ip-address=${HEAD_NODE_IP} \
     --num-gpus 2 \
-    --num-cpus 4 \
+    --num-cpus 8 \
     --memory=214748364800 \
     --disable-usage-stats \
     --dashboard-host=0.0.0.0 \
@@ -159,6 +170,7 @@ python3 -m ray.scripts.scripts job submit --address="http://${HEAD_NODE_IP}:8265
    ${SFT_ARGS[@]} \
    ${OPTIMIZER_ARGS[@]} \
    ${WANDB_ARGS[@]} \
+   ${EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
    ${TRAIN_BACKEND_ARGS[@]} \
    ${PERF_ARGS[@]} \

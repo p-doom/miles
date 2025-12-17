@@ -21,10 +21,13 @@ def train(args):
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
-    rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
+    rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"], args.prompt_data)
+    rollout_manager_eval = None
+    if args.val_interval is not None:
+        rollout_manager_eval, _ = create_rollout_manager(args, pgs["rollout"], args.val_prompt_data)
 
     # create the actor and critic models
-    actor_model, critic_model = create_training_models(args, pgs, rollout_manager)
+    actor_model, critic_model = create_training_models(args, pgs, rollout_manager, rollout_manager_eval)
 
     if args.offload_rollout:
         ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
@@ -62,10 +65,20 @@ def train(args):
     # train loop.
     # note that for async training, one can change the position of the sync operation(ray.get).
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
+
+        rollout_data_ref = ray.get(rollout_manager.generate.remote(rollout_id))
+
+        if args.val_interval is not None and rollout_id == 0:
+            if args.loss_type == "sft_loss":
+                rollout_data_val = [ray.get(rollout_manager_eval.generate.remote(rollout_id)) for _ in range(args.val_steps)]
+                ray.get(actor_model.async_val(rollout_id, rollout_data_val))
+            else:
+                # TODO (mihir): implement val loss for other loss types
+                raise NotImplementedError("Validation loss not implemented for loss type: {}".format(args.loss_type))
+
         if args.eval_interval is not None and rollout_id == 0:
             ray.get(rollout_manager.eval.remote(rollout_id))
 
-        rollout_data_ref = ray.get(rollout_manager.generate.remote(rollout_id))
 
         if args.offload_rollout:
             ray.get(rollout_manager.offload.remote())
@@ -94,6 +107,14 @@ def train(args):
             if GPU_MEMORY_TYPE_CUDA_GRAPH is not None:
                 ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_CUDA_GRAPH]))
             ray.get(rollout_manager.onload.remote(tags=[GPU_MEMORY_TYPE_KV_CACHE]))
+
+        if should_run_periodic_action(rollout_id, args.val_interval, num_rollout_per_epoch):
+            if args.loss_type == "sft_loss":
+                rollout_data_val = [ray.get(rollout_manager_eval.generate.remote(rollout_id)) for _ in range(args.val_steps)]
+                ray.get(actor_model.async_val(rollout_id, rollout_data_val))
+            else:
+                # TODO (mihir): implement val loss for other loss types
+                raise NotImplementedError("Validation loss not implemented for loss type: {}".format(args.loss_type))
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
             ray.get(rollout_manager.eval.remote(rollout_id))

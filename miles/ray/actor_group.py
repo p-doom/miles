@@ -115,6 +115,10 @@ class RayTrainGroup:
         """Do one rollout training"""
         return [actor.train.remote(rollout_id, rollout_data_ref) for actor in self._actor_handlers]
 
+    def async_val(self, rollout_id, rollout_data_ref_lst):
+        """Do one rollout validation"""
+        return [actor.val.remote(rollout_id, rollout_data_ref_lst) for actor in self._actor_handlers]
+
     def save_model(self, step_id):
         """Save actor model on rank 0."""
         return ray.get([actor.save_model.remote(step_id) for actor in self._actor_handlers])
@@ -140,5 +144,5 @@ class RayTrainGroup:
             ]
         )
 
-    def set_rollout_manager(self, rollout_manager):
-        return ray.get([actor.set_rollout_manager.remote(rollout_manager) for actor in self._actor_handlers])
+    def set_rollout_manager(self, rollout_manager, val_rollout_manager=None):
+        return ray.get([actor.set_rollout_manager.remote(rollout_manager, val_rollout_manager) for actor in self._actor_handlers])
