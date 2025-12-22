@@ -30,6 +30,8 @@ CKPT_ARGS=(
    --hf-checkpoint /fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-0.6B
    --load /fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-0.6B
    --ref-load /fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-0.6B
+   --save ${LOAD_SAVE_PATH}
+   --save-interval 10
 )
 
 SFT_ARGS=(
