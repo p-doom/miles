@@ -675,7 +675,7 @@ class SFTTrainer:
 
         # calculate val loss in the beginning of training
         if self.args.val_prompt_data and self.args.start_rollout_id == 0:
-            self.calculate_val_loss(0)
+            self.calculate_val_loss(rollout_id=0)
 
         for rollout_id in range(self.args.start_rollout_id, self.args.num_rollout):
             self.train_one_rollout(rollout_id)
