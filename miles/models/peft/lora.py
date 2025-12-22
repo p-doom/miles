@@ -119,8 +119,7 @@ def apply_lora(model: nn.Module, config: LoRAConfig) -> nn.Module:
                 modules_to_replace.append((name, module))
                 
     if not modules_to_replace:
-        print(f"Warning: No modules found matching {target_modules}")
-        return model
+        raise ValueError(f"No modules found matching {target_modules}")
         
     for name, module in modules_to_replace:
         # Get parent module and child name
