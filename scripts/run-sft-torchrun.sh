@@ -50,9 +50,9 @@ SFT_ARGS=(
 
 LORA_ARGS=(
     # --use-lora
-    # --lora-rank 16
-    # --lora-alpha 32
-    # --lora-dropout 0.05
+    # --lora-rank 8
+    # --lora-alpha 16
+    # --lora-dropout 0.0
     # --lora-target-modules q_proj v_proj
 )
 
