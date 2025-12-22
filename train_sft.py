@@ -338,8 +338,7 @@ class SFTTrainer:
         checkpoint_payload = checkpoint.load(self)
         checkpoint.finalize_load(self, checkpoint_payload)
         
-        assert self.args.start_rollout_id > 0
-        if self.args.rollout_global_dataset:
+        if self.args.rollout_global_dataset and self.args.start_rollout_id > 0:
             self.data_source.load(self.args.start_rollout_id - 1)
 
     def generate_sft_rollout(self, rollout_id: int) -> list[Sample]:
