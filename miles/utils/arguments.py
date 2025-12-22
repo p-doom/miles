@@ -462,6 +462,22 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "the input should be the same structure as an openai message, e.g. [{'role': 'user', 'content': 'blabla'}]. "
                 ),
             )
+            # validation loss
+            parser.add_argument(
+                "--val-prompt-data",
+                type=str,
+                default=None,
+                help=(
+                    "The path to the validation prompt data. "
+                    "Currently we only support jsonl format, and each line should contains --input-key and --label-key, "
+                    "which will be used as the prompt and the label respectively. "
+                    "If you want to use a custom template, you can set --apply-chat-template to true, in that case, "
+                    "the input should be the same structure as an openai message, e.g. [{'role': 'user', 'content': 'blabla'}]. "
+                ),
+            )
+            parser.add_argument("--val-interval", type=int, default=0, help="Interval for validation.")
+            parser.add_argument("--val-steps", type=int, default=0, help="Number of steps for validation.")
+
             parser.add_argument("--apply-chat-template", action="store_true", default=False)
             # Temporarily be JSON-serialized str, will be a real dict after using Omegaconf
             parser.add_argument("--apply-chat-template-kwargs", type=json.loads, default="{}")

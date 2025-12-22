@@ -35,6 +35,9 @@ CKPT_ARGS=(
 SFT_ARGS=(
    --rollout-function-path miles.rollout.sft_rollout.generate_rollout
    --prompt-data /fast/project/HFMI_SynergyUnit/tab_model/huggingface/nemo_hf_part_jsonl_4k_tokens.parquet
+   --val-prompt-data /fast/project/HFMI_SynergyUnit/tab_model/huggingface/nemo_hf_part_jsonl_4k_tokens_validation.parquet
+   --val-interval 100
+   --val-steps 50
    --input-key messages
    --apply-chat-template
    --rollout-shuffle
