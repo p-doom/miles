@@ -105,6 +105,7 @@ def apply_lora(model: nn.Module, config: LoRAConfig) -> nn.Module:
     Returns:
         The modified model.
     """
+    assert config.bias == "none", "Only bias='none' is currently supported"
     target_modules = set(config.target_modules)
     
     # We need to collect replacements first to avoid modifying the dict while iterating
