@@ -318,9 +318,19 @@ class SFTTrainer:
 
     def _init_optimizer(self):
         """Initialize optimizer and learning rate scheduler."""
+        trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+        
+        if self.args.use_lora:
+            total_params = sum(p.numel() for p in self.model.parameters())
+            trainable_count = sum(p.numel() for p in trainable_params)
+            logger.info(
+                f"[Rank {dist.get_rank()}] LoRA: {trainable_count:,} trainable params "
+                f"out of {total_params:,} total ({100 * trainable_count / total_params:.2f}%)"
+            )
+        
         if self.args.optimizer == "adam":
             self.optimizer = torch.optim.AdamW(
-                self.model.parameters(),
+                trainable_params,
                 lr=self.args.lr,
                 betas=(self.args.adam_beta1, self.args.adam_beta2),
                 eps=self.args.adam_eps,
