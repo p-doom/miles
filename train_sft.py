@@ -31,6 +31,7 @@ from transformers import AutoConfig
 
 from ring_flash_attn import substitute_hf_flash_attn, update_ring_flash_attn_params
 
+from miles.models.peft import LoRAConfig, apply_lora, add_lora_arguments
 from miles.backends.fsdp_utils import checkpoint
 from miles.backends.fsdp_utils.actor import (
     apply_fsdp2,
@@ -283,6 +284,16 @@ class SFTTrainer:
                 trust_remote_code=True,
                 attn_implementation=self.args.attn_implementation,
             )
+
+            if self.args.use_lora:
+                lora_config = LoRAConfig(
+                    lora_rank=self.args.lora_rank,
+                    lora_alpha=self.args.lora_alpha,
+                    lora_dropout=self.args.lora_dropout,
+                    target_modules=self.args.lora_target_modules,
+                )
+                model = apply_lora(model, lora_config)
+                logger.info(f"[Rank {dist.get_rank()}] Applied LoRA: {lora_config}")
 
         model.train()
         full_state = model.state_dict()
@@ -602,7 +613,12 @@ class SFTTrainer:
         """Save model checkpoint."""
         if self.args.save is None:
             return
-        checkpoint.save(self, iteration)
+            
+        keys_filter = None
+        if self.args.use_lora:
+            keys_filter = lambda k: "lora_" in k
+            
+        checkpoint.save(self, iteration, keys_filter=keys_filter)
         
         if self.args.rollout_global_dataset:
             self.data_source.save(iteration)
@@ -644,7 +660,7 @@ def set_sft_defaults(args: Namespace) -> Namespace:
 def main():
     configure_logger()
 
-    args = parse_args()
+    args = parse_args(add_custom_arguments=add_lora_arguments)
 
     args = set_sft_defaults(args)
 

@@ -48,6 +48,14 @@ SFT_ARGS=(
    --num-rollout 2000
 )
 
+LORA_ARGS=(
+    # --use-lora
+    # --lora-rank 16
+    # --lora-alpha 32
+    # --lora-dropout 0.05
+    # --lora-target-modules q_proj v_proj
+)
+
 OPTIMIZER_ARGS=(
    --optimizer adam
    --lr 1e-5
@@ -96,6 +104,7 @@ torchrun \
     train_sft.py \
     ${CKPT_ARGS[@]} \
     ${SFT_ARGS[@]} \
+    ${LORA_ARGS[@]} \
     ${OPTIMIZER_ARGS[@]} \
     ${WANDB_ARGS[@]} \
     ${TRAIN_BACKEND_ARGS[@]} \
