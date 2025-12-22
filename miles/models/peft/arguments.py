@@ -24,7 +24,7 @@ def add_lora_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentPars
     group.add_argument(
         "--lora-dropout",
         type=float,
-        default=0.05,
+        default=0.0,
         help="LoRA dropout.",
     )
     group.add_argument(
