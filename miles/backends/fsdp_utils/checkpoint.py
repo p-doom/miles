@@ -10,7 +10,7 @@ import safetensors.torch
 import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
-from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict, get_model_state_dict
+from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict, get_model_state_dict, StateDictOptions
 from torch.distributed.checkpoint.stateful import Stateful
 from miles.models.peft import LoRAConfig
 
@@ -31,7 +31,16 @@ class ModelState(Stateful):
         return {"model": model_state_dict}
 
     def load_state_dict(self, state_dict):
-        set_state_dict(self.model, optimizers=[], model_state_dict=state_dict["model"], optim_state_dict=None)
+        options = None
+        if self.keys_filter:
+            # For filtered loading (e.g., LoRA), use strict=False to allow partial loading
+            options = StateDictOptions(strict=False)
+        set_state_dict(
+            self.model, optimizers=[], 
+            model_state_dict=state_dict["model"], 
+            optim_state_dict=None,
+            options=options
+        )
 
 
 class OptimizerState(Stateful):
@@ -49,8 +58,15 @@ class OptimizerState(Stateful):
         return {"optim": optimizer_state_dict}
 
     def load_state_dict(self, state_dict):
+        options = None
+        if self.keys_filter:
+            # For filtered loading (e.g., LoRA), use strict=False to allow partial loading
+            options = StateDictOptions(strict=False)
         set_state_dict(
-            self.model, optimizers=self.optimizer, model_state_dict=None, optim_state_dict=state_dict["optim"]
+            self.model, optimizers=self.optimizer, 
+            model_state_dict=None, 
+            optim_state_dict=state_dict["optim"],
+            options=options
         )
 
 
@@ -116,8 +132,13 @@ def load(actor: Any) -> dict[str, Any] | None:
         logger.info(f"[FSDP] Model checkpoint {model_dir} not found; skipping load.")
         return None
 
+    keys_filter = None
+    if actor.args.use_lora:
+        keys_filter = lambda k: "lora_" in k
+        logger.info("[FSDP] LoRA mode: loading only LoRA weights from checkpoint")
+
     # Load model weights (always)
-    model_state = ModelState(actor.model)
+    model_state = ModelState(actor.model, keys_filter=keys_filter)
     state_dict = {"model_state": model_state}
 
     try:
@@ -130,7 +151,7 @@ def load(actor: Any) -> dict[str, Any] | None:
     # Load optimizer state (optional)
     load_optimizer = not getattr(actor.args, "no_load_optim", False) and hasattr(actor, "optimizer")
     if load_optimizer and optimizer_dir.exists():
-        optimizer_state = OptimizerState(actor.model, actor.optimizer)
+        optimizer_state = OptimizerState(actor.model, actor.optimizer, keys_filter=keys_filter)
         optim_state_dict = {"optim_state": optimizer_state}
         try:
             dcp.load(state_dict=optim_state_dict, checkpoint_id=str(optimizer_dir))
