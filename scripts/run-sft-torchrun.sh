@@ -24,13 +24,14 @@ export TORCH_DISTRIBUTED_DEBUG=INFO
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
 RUN_ID=${RUN_ID:-"run_$(date +%Y%m%d_%H%M%S)"}
-LOAD_SAVE_PATH="/fast/project/HFMI_SynergyUnit/tab_model/huggingface/shared_data/${RUN_ID}/checkpoints"
+LOAD_PATH="/fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-0.6B"
+SAVE_PATH="/fast/project/HFMI_SynergyUnit/tab_model/huggingface/shared_data/${RUN_ID}/checkpoints"
 
 CKPT_ARGS=(
    --hf-checkpoint /fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-0.6B
-   --load /fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-0.6B
+   --load ${LOAD_PATH}
    --ref-load /fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-0.6B
-   --save ${LOAD_SAVE_PATH}
+   --save ${SAVE_PATH}
    --save-interval 10
 )
 
