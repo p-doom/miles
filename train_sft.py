@@ -326,6 +326,10 @@ class SFTTrainer:
         """Load checkpoint if available."""
         checkpoint_payload = checkpoint.load(self)
         checkpoint.finalize_load(self, checkpoint_payload)
+        
+        assert self.args.start_rollout_id > 0
+        if self.args.rollout_global_dataset:
+            self.data_source.load(self.args.start_rollout_id - 1)
 
     def generate_sft_rollout(self, rollout_id: int) -> list[Sample]:
         """Generate SFT rollout data (tokenize and create loss masks)."""
@@ -599,6 +603,9 @@ class SFTTrainer:
         if self.args.save is None:
             return
         checkpoint.save(self, iteration)
+        
+        if self.args.rollout_global_dataset:
+            self.data_source.save(iteration)
 
     def train(self):
         """Main training loop."""
