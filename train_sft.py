@@ -671,7 +671,7 @@ class SFTTrainer:
             assert self.args.val_interval > 0, f"val_interval must be greater than 0 when val_prompt_data is provided, got {self.args.val_interval}"
             assert self.args.val_steps > 0, f"val_steps must be greater than 0 when val_prompt_data is provided, got {self.args.val_steps}"
 
-        # calculate val loss in the beginning of training
+        # calculate val loss at the beginning of training
         if self.args.val_prompt_data and self.args.start_rollout_id == 0:
             self.calculate_val_loss(rollout_id=0)
 

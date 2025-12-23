@@ -45,6 +45,7 @@ class RolloutDataSource(DataSource):
     def __init__(self, args, prompt_data=None):
         self.args = args
         if prompt_data is None:
+            # For backwards compatibility with miles' default codepaths
             prompt_data = args.prompt_data
 
         self.epoch_id = 0
