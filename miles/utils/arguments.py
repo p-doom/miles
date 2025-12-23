@@ -468,7 +468,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "The path to the validation prompt data. "
                     "Currently we only support jsonl/parquet format, and each line should contains --input-key and --label-key, "
                     "which will be used as the validation prompt and the label respectively. "
                     "If you want to use a custom template, you can set --apply-chat-template to true, in that case, "
