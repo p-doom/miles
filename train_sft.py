@@ -597,17 +597,17 @@ class SFTTrainer:
         self.prof.step(rollout_id=rollout_id)
 
     def calculate_val_loss(self, rollout_id: int):
-        """Execute validation loss."""
+        """Calculate validation loss over `args.val_steps`."""
         self.model.eval()
         reported_accum = {}
-        for _ in tqdm(range(self.args.val_steps), desc="actor_val", disable=dist.get_rank() != 0):
+        for v_step in tqdm(range(self.args.val_steps), desc="actor_val", disable=dist.get_rank() != 0):
             samples = self.generate_sft_rollout(rollout_id, self.val_data_source)
             val_data = self._convert_samples_to_train_data(samples)
             rollout_data = self._split_train_data_by_dp(val_data)
             packed_batches, accum = self._packed_data(rollout_data)
 
             if len(accum) == 0:
-                logger.warning(f"[Rank {dist.get_rank()}] No batches to train on rollout {rollout_id}")
+                logger.warning(f"[Rank {dist.get_rank()}] No batches to validate on rollout {rollout_id}, validation step {v_step}")
                 return
 
             for mbs_id, packed_batch in enumerate(packed_batches):
@@ -630,8 +630,6 @@ class SFTTrainer:
             logger.info(f"step {self.global_step}: {log_dict}")
             log_dict["val/step"] = self.global_step
             tracking_utils.log(self.args, log_dict, step_key="val/step")
-
-        self.prof.step(rollout_id=rollout_id)
 
     def _val_step(self, packed_batch):
         model_args = self._get_model_inputs_args(packed_batch)
