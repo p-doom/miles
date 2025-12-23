@@ -199,7 +199,9 @@ class SFTTrainer:
     def _init_data_source(self):
         """Initialize the data source for SFT training."""
         self.data_source = RolloutDataSource(self.args, self.args.prompt_data)
-        self.val_data_source = RolloutDataSource(self.args, self.args.val_prompt_data)
+        self.val_data_source = None
+        if self.val_prompt_data is not None:
+            self.val_data_source = RolloutDataSource(self.args, self.args.val_prompt_data)
 
         # Calculate num_rollout from dataset size
         if self.args.num_rollout is None:
