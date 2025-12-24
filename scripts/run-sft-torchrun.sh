@@ -37,18 +37,20 @@ CKPT_ARGS=(
 
 SFT_ARGS=(
    --rollout-function-path miles.rollout.sft_rollout.generate_rollout
-   --prompt-data /fast/project/HFMI_SynergyUnit/tab_model/huggingface/nemo_hf_part_jsonl_4k_tokens.parquet
+   --prompt-data /fast/project/HFMI_SynergyUnit/tab_model/huggingface/nemo_hf_part_jsonl_4k_tokens.jsonl
+   --val-prompt-data /fast/project/HFMI_SynergyUnit/tab_model/huggingface/nemo_hf_part_jsonl_4k_tokens_validation.jsonl
+   --val-interval 1000
+   --val-steps 100
    --input-key messages
    --apply-chat-template
    --rollout-shuffle
-   --num-epoch 3
+   --num-rollout 10000
    --rollout-batch-size 16
    --global-batch-size 16
 
    --loss-type sft_loss
    --calculate-per-token-loss
    --disable-compute-advantages-and-returns
-   --num-rollout 2000
 )
 
 LORA_ARGS=(
@@ -64,9 +66,9 @@ OPTIMIZER_ARGS=(
    --lr 1e-4
    --lr-decay-style WSD
    --lr-wsd-decay-style linear
-   --lr-warmup-iters 100
-   --lr-decay-iters 2000
-   --lr-wsd-decay-iters 500
+   --lr-warmup-iters 500
+   --lr-decay-iters 10000
+   --lr-wsd-decay-iters 2000
    --weight-decay 0.1
    --adam-beta1 0.9
    --adam-beta2 0.98

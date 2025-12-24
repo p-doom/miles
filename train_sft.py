@@ -199,7 +199,10 @@ class SFTTrainer:
 
     def _init_data_source(self):
         """Initialize the data source for SFT training."""
-        self.data_source = RolloutDataSource(self.args)
+        self.data_source = RolloutDataSource(self.args, self.args.prompt_data)
+        self.val_data_source = None
+        if self.args.val_prompt_data is not None:
+            self.val_data_source = RolloutDataSource(self.args, self.args.val_prompt_data)
 
         # Calculate num_rollout from dataset size
         if self.args.num_rollout is None:
@@ -353,9 +356,9 @@ class SFTTrainer:
         if self.args.rollout_global_dataset and self.args.start_rollout_id > 0:
             self.data_source.load(self.args.start_rollout_id - 1)
 
-    def generate_sft_rollout(self, rollout_id: int) -> list[Sample]:
+    def generate_sft_rollout(self, rollout_id: int, data_source: RolloutDataSource) -> list[Sample]:
         """Generate SFT rollout data (tokenize and create loss masks)."""
-        samples = self.data_source.get_samples(self.args.rollout_batch_size)
+        samples = data_source.get_samples(self.args.rollout_batch_size)
 
         result = []
         for i, (sample,) in enumerate(samples):
@@ -597,7 +600,8 @@ class SFTTrainer:
 
     def train_one_rollout(self, rollout_id: int):
         """Execute one rollout's worth of training."""
-        samples = self.generate_sft_rollout(rollout_id)
+        self.model.train()
+        samples = self.generate_sft_rollout(rollout_id, self.data_source)
 
         train_data = self._convert_samples_to_train_data(samples)
 
@@ -620,6 +624,65 @@ class SFTTrainer:
 
         self.prof.step(rollout_id=rollout_id)
 
+    def calculate_val_loss(self, rollout_id: int):
+        """Calculate validation loss over `args.val_steps`."""
+        self.model.eval()
+        reported_accum = {}
+        for v_step in tqdm(range(self.args.val_steps), desc="actor_val", disable=dist.get_rank() != 0):
+            samples = self.generate_sft_rollout(rollout_id, self.val_data_source)
+            val_data = self._convert_samples_to_train_data(samples)
+            rollout_data = self._split_train_data_by_dp(val_data)
+            packed_batches, accum = self._packed_data(rollout_data)
+
+            if len(accum) == 0:
+                logger.warning(f"[Rank {dist.get_rank()}] No batches to validate on rollout {rollout_id}, validation step {v_step}")
+                return
+
+            for mbs_id, packed_batch in enumerate(packed_batches):
+                reported = self._val_step(packed_batch)
+                for k, v in reported.items():
+                    reported_accum.setdefault(k, []).append(v)
+
+        aggregated = {k: torch.stack(v).sum().item() for k, v in reported_accum.items()}
+        # TODO: change this, this is slow.
+        reduced_aggregated = [None] * self.dp_size
+        dist.all_gather_object(reduced_aggregated, aggregated, group=self.dp_group)
+        aggregated = {}
+        for k in reported_accum.keys():
+            aggregated[k] = sum([r[k] for r in reduced_aggregated]) / (self.args.global_batch_size * self.args.val_steps)
+        reported_accum.clear()
+        if dist.get_rank() == 0:
+            log_dict = {
+                f"val/{k}": (val.item() if torch.is_tensor(val) else val) for k, val in aggregated.items()
+            }
+            logger.info(f"step {self.global_step}: {log_dict}")
+            log_dict["val/step"] = self.global_step
+            tracking_utils.log(self.args, log_dict, step_key="val/step")
+
+    def _val_step(self, packed_batch):
+        model_args = self._get_model_inputs_args(packed_batch)
+        with torch.no_grad():
+            logits = self.model(**model_args).logits.squeeze(0).float()
+
+        # Compute log probs and entropy (unified for both CP and non-CP modes)
+        log_probs, entropy_result = get_logprob_and_entropy_with_cp(
+            logits=logits,
+            target_tokens=packed_batch["tokens"],
+            cp_rank=self.cp_rank,
+            cp_size=self.cp_size,
+            cp_group=self.cp_group,
+            model_input_ids=model_args["input_ids"],
+            allow_compile=not self.args.true_on_policy_mode,
+            temperature=self.args.rollout_temperature,
+        )
+        packed_batch["cur_log_probs"] = log_probs
+        packed_batch["entropy"] = entropy_result
+
+        unpacked_batches = unpack_sequences(packed_batch)
+        _, reported = self._compute_sft_loss(unpacked_batches, logits)
+        return reported
+
+
     def save_model(self, iteration: int):
         """Save model checkpoint."""
         if self.args.save is None:
@@ -640,6 +703,13 @@ class SFTTrainer:
             f"[Rank {dist.get_rank()}] Starting training: "
             f"rollout_id {self.args.start_rollout_id} -> {self.args.num_rollout}"
         )
+        if self.args.val_prompt_data:
+            assert self.args.val_interval > 0, f"val_interval must be greater than 0 when val_prompt_data is provided, got {self.args.val_interval}"
+            assert self.args.val_steps > 0, f"val_steps must be greater than 0 when val_prompt_data is provided, got {self.args.val_steps}"
+
+        # calculate val loss at the beginning of training
+        if self.args.val_prompt_data and self.args.start_rollout_id == 0:
+            self.calculate_val_loss(rollout_id=0)
 
         for rollout_id in range(self.args.start_rollout_id, self.args.num_rollout):
             self.train_one_rollout(rollout_id)
@@ -649,6 +719,10 @@ class SFTTrainer:
                 rollout_id, self.args.save_interval, self.num_rollout_per_epoch
             ):
                 self.save_model(rollout_id)
+
+            # Calculate val loss periodically
+            if self.args.val_prompt_data and should_run_periodic_action(rollout_id, self.args.val_interval):
+                self.calculate_val_loss(rollout_id)
 
         logger.info(f"[Rank {dist.get_rank()}] Training completed!")
 
