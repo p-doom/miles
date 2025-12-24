@@ -31,7 +31,7 @@ from transformers import AutoConfig
 
 from ring_flash_attn import substitute_hf_flash_attn, update_ring_flash_attn_params
 
-from miles.models.peft import LoRAConfig, apply_lora, add_lora_arguments
+from miles.models.peft import LoRAConfig, apply_lora
 from miles.backends.fsdp_utils import checkpoint
 from miles.backends.fsdp_utils.actor import (
     apply_fsdp2,
@@ -312,6 +312,8 @@ class SFTTrainer:
         self.model = model
 
         if self.args.gradient_checkpointing:
+            # FIXME: Conceptually, gradient checkpointing should be compatible with LoRA, but we don't support it yet.
+            assert not self.args.use_lora, "Gradient checkpointing is incompatible with LoRA"
             self.model.gradient_checkpointing_enable()
 
         logger.info(f"[Rank {dist.get_rank()}] Model initialized with FSDP")
@@ -669,7 +671,7 @@ def set_sft_defaults(args: Namespace) -> Namespace:
 def main():
     configure_logger()
 
-    args = parse_args(add_custom_arguments=add_lora_arguments)
+    args = parse_args()
 
     args = set_sft_defaults(args)
 
