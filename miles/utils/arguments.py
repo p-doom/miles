@@ -10,6 +10,7 @@ from transformers import AutoConfig
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
+from miles.models.peft import add_lora_arguments
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 
 from miles.utils.logging_utils import configure_logger
@@ -1229,6 +1230,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
         parser = add_cluster_arguments(parser)
         parser = add_train_arguments(parser)
+        parser = add_lora_arguments(parser)
         parser = add_rollout_arguments(parser)
         parser = add_fault_tolerance_arguments(parser)
         parser = add_data_arguments(parser)

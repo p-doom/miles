@@ -24,12 +24,15 @@ export TORCH_DISTRIBUTED_DEBUG=INFO
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
 RUN_ID=${RUN_ID:-"run_$(date +%Y%m%d_%H%M%S)"}
-LOAD_SAVE_PATH="/fast/project/HFMI_SynergyUnit/tab_model/huggingface/shared_data/${RUN_ID}/checkpoints"
+LOAD_PATH="/fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-0.6B"
+SAVE_PATH="/fast/project/HFMI_SynergyUnit/tab_model/huggingface/shared_data/${RUN_ID}/checkpoints"
 
 CKPT_ARGS=(
    --hf-checkpoint /fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-0.6B
-   --load /fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-0.6B
+   --load ${LOAD_PATH}
    --ref-load /fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-0.6B
+   --save ${SAVE_PATH}
+   --save-interval 200
 )
 
 SFT_ARGS=(
@@ -48,9 +51,17 @@ SFT_ARGS=(
    --num-rollout 2000
 )
 
+LORA_ARGS=(
+    --use-lora
+    --lora-rank 8
+    --lora-alpha 16
+    --lora-dropout 0.0
+    --lora-target-modules q_proj v_proj
+)
+
 OPTIMIZER_ARGS=(
    --optimizer adam
-   --lr 1e-5
+   --lr 1e-4
    --lr-decay-style WSD
    --lr-wsd-decay-style linear
    --lr-warmup-iters 100
@@ -71,7 +82,6 @@ WANDB_ARGS=(
 TRAIN_BACKEND_ARGS=(
    --train-backend fsdp
    --update-weight-buffer-size 536870912
-   --gradient-checkpointing
    --attn-implementation flash_attention_3
 )
 
@@ -96,6 +106,7 @@ torchrun \
     train_sft.py \
     ${CKPT_ARGS[@]} \
     ${SFT_ARGS[@]} \
+    ${LORA_ARGS[@]} \
     ${OPTIMIZER_ARGS[@]} \
     ${WANDB_ARGS[@]} \
     ${TRAIN_BACKEND_ARGS[@]} \
