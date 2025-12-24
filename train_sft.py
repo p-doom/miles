@@ -31,6 +31,7 @@ from transformers import AutoConfig
 
 from ring_flash_attn import substitute_hf_flash_attn, update_ring_flash_attn_params
 
+from miles.models.peft import LoRAConfig, apply_lora
 from miles.backends.fsdp_utils import checkpoint
 from miles.backends.fsdp_utils.actor import (
     apply_fsdp2,
@@ -284,6 +285,16 @@ class SFTTrainer:
                 attn_implementation=self.args.attn_implementation,
             )
 
+            if self.args.use_lora:
+                lora_config = LoRAConfig(
+                    lora_rank=self.args.lora_rank,
+                    lora_alpha=self.args.lora_alpha,
+                    lora_dropout=self.args.lora_dropout,
+                    target_modules=self.args.lora_target_modules,
+                )
+                model = apply_lora(model, lora_config)
+                logger.info(f"[Rank {dist.get_rank()}] Applied LoRA: {lora_config}")
+
         model.train()
         full_state = model.state_dict()
 
@@ -301,15 +312,27 @@ class SFTTrainer:
         self.model = model
 
         if self.args.gradient_checkpointing:
+            # FIXME: Conceptually, gradient checkpointing should be compatible with LoRA, but we don't support it yet.
+            assert not self.args.use_lora, "Gradient checkpointing is incompatible with LoRA"
             self.model.gradient_checkpointing_enable()
 
         logger.info(f"[Rank {dist.get_rank()}] Model initialized with FSDP")
 
     def _init_optimizer(self):
         """Initialize optimizer and learning rate scheduler."""
+        trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+        
+        if self.args.use_lora:
+            total_params = sum(p.numel() for p in self.model.parameters())
+            trainable_count = sum(p.numel() for p in trainable_params)
+            logger.info(
+                f"[Rank {dist.get_rank()}] LoRA: {trainable_count:,} trainable params "
+                f"out of {total_params:,} total ({100 * trainable_count / total_params:.2f}%)"
+            )
+        
         if self.args.optimizer == "adam":
             self.optimizer = torch.optim.AdamW(
-                self.model.parameters(),
+                trainable_params,
                 lr=self.args.lr,
                 betas=(self.args.adam_beta1, self.args.adam_beta2),
                 eps=self.args.adam_eps,
@@ -327,8 +350,7 @@ class SFTTrainer:
         checkpoint_payload = checkpoint.load(self)
         checkpoint.finalize_load(self, checkpoint_payload)
         
-        assert self.args.start_rollout_id > 0
-        if self.args.rollout_global_dataset:
+        if self.args.rollout_global_dataset and self.args.start_rollout_id > 0:
             self.data_source.load(self.args.start_rollout_id - 1)
 
     def generate_sft_rollout(self, rollout_id: int) -> list[Sample]:
@@ -602,7 +624,12 @@ class SFTTrainer:
         """Save model checkpoint."""
         if self.args.save is None:
             return
-        checkpoint.save(self, iteration)
+            
+        keys_filter = None
+        if self.args.use_lora:
+            keys_filter = lambda k: "lora_" in k
+            
+        checkpoint.save(self, iteration, keys_filter=keys_filter)
         
         if self.args.rollout_global_dataset:
             self.data_source.save(iteration)

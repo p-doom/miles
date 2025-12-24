@@ -26,6 +26,7 @@ from miles.utils.tracking_utils import init_tracking
 
 from ...utils import tracking_utils
 from ...utils.profile_utils import TrainProfiler
+from ...models.peft import LoRAConfig, apply_lora
 from . import checkpoint
 from .data_packing import pack_sequences, pad_packed_sequence_with_cp, unpack_sequences
 from .lr_scheduler import get_lr_scheduler
@@ -94,6 +95,16 @@ class FSDPTrainRayActor(TrainRayActor):
                 attn_implementation=self.args.attn_implementation,
             )
 
+            if args.use_lora:
+                lora_config = LoRAConfig(
+                    lora_rank=args.lora_rank,
+                    lora_alpha=args.lora_alpha,
+                    lora_dropout=args.lora_dropout,
+                    target_modules=args.lora_target_modules,
+                )
+                model = apply_lora(model, lora_config)
+                logger.info(f"[Rank {dist.get_rank()}] Applied LoRA: {lora_config}")
+
         model.train()
 
         full_state = model.state_dict()
@@ -107,11 +118,23 @@ class FSDPTrainRayActor(TrainRayActor):
         self.model = model
 
         if args.gradient_checkpointing:
+            # FIXME: Conceptually, gradient checkpointing should be compatible with LoRA, but we don't support it yet.
+            assert not args.use_lora, "Gradient checkpointing is incompatible with LoRA"
             self.model.gradient_checkpointing_enable()
 
         if args.optimizer == "adam":
+            trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+            
+            if args.use_lora:
+                total_params = sum(p.numel() for p in self.model.parameters())
+                trainable_count = sum(p.numel() for p in trainable_params)
+                logger.info(
+                    f"[Rank {dist.get_rank()}] LoRA: {trainable_count:,} trainable params "
+                    f"out of {total_params:,} total ({100 * trainable_count / total_params:.2f}%)"
+                )
+            
             self.optimizer = torch.optim.AdamW(
-                self.model.parameters(),
+                trainable_params,
                 lr=args.lr,
                 betas=(args.adam_beta1, args.adam_beta2),
                 eps=args.adam_eps,
@@ -322,7 +345,11 @@ class FSDPTrainRayActor(TrainRayActor):
         if self.args.debug_rollout_only or self.args.save is None:
             return
 
-        checkpoint.save(self, iteration)
+        keys_filter = None
+        if self.args.use_lora:
+            keys_filter = lambda k: "lora_" in k
+
+        checkpoint.save(self, iteration, keys_filter=keys_filter)
 
     def _compute_log_prob(
         self,
