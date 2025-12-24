@@ -42,8 +42,11 @@ class DataSource(abc.ABC):
 
 # TODO may further refactor data-loading part later
 class RolloutDataSource(DataSource):
-    def __init__(self, args):
+    def __init__(self, args, prompt_data=None):
         self.args = args
+        if prompt_data is None:
+            # For backwards compatibility with miles' default codepaths
+            prompt_data = args.prompt_data
 
         self.epoch_id = 0
         self.sample_group_index = 0
@@ -63,7 +66,7 @@ class RolloutDataSource(DataSource):
                     processor.save_pretrained(Path(d) / "processor")
 
             self.dataset = Dataset(
-                args.prompt_data,
+                prompt_data,
                 tokenizer=tokenizer,
                 processor=processor,
                 max_length=args.rollout_max_prompt_len,
