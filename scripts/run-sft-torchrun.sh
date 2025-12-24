@@ -41,7 +41,7 @@ SFT_ARGS=(
    --input-key messages
    --apply-chat-template
    --rollout-shuffle
-   --num-epoch 16
+   --num-rollout 10000
    --rollout-batch-size 16
    --global-batch-size 16
 
@@ -56,7 +56,7 @@ OPTIMIZER_ARGS=(
    --lr-decay-style WSD
    --lr-wsd-decay-style linear
    --lr-warmup-iters 500
-   --lr-decay-iters 2000
+   --lr-decay-iters 10000
    --lr-wsd-decay-iters 2000
    --weight-decay 0.1
    --adam-beta1 0.9
