@@ -43,6 +43,7 @@ SFT_ARGS=(
    --val-steps 100
    --input-key messages
    --apply-chat-template
+   --apply-chat-template-kwargs '{"enable_thinking":false}'
    --rollout-shuffle
    --num-rollout 10000
    --rollout-batch-size 16

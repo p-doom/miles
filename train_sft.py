@@ -195,6 +195,7 @@ class SFTTrainer:
         self.mask_generator = MultiTurnLossMaskGenerator(
             self.tokenizer,
             tokenizer_type=getattr(self.args, "loss_mask_type", None),
+            chat_template_kwargs=getattr(self.args, "apply_chat_template_kwargs", None),
         )
 
     def _init_data_source(self):
