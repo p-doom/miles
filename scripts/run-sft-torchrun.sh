@@ -32,7 +32,7 @@ CKPT_ARGS=(
    --load ${LOAD_PATH}
    --ref-load /fast/project/HFMI_SynergyUnit/tab_model/huggingface/Qwen3-0.6B
    --save ${SAVE_PATH}
-   --save-interval 200
+   --save-interval 1000
 )
 
 SFT_ARGS=(
