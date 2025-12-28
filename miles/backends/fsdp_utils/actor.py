@@ -118,9 +118,8 @@ class FSDPTrainRayActor(TrainRayActor):
         self.model = model
 
         if args.gradient_checkpointing:
-            # FIXME: Conceptually, gradient checkpointing should be compatible with LoRA, but we don't support it yet.
-            assert not args.use_lora, "Gradient checkpointing is incompatible with LoRA"
-            self.model.gradient_checkpointing_enable()
+            # Use non-reentrant mode for gradient checkpointing
+            self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 
         if args.optimizer == "adam":
             trainable_params = [p for p in self.model.parameters() if p.requires_grad]

@@ -315,9 +315,8 @@ class SFTTrainer:
         self.model = model
 
         if self.args.gradient_checkpointing:
-            # FIXME: Conceptually, gradient checkpointing should be compatible with LoRA, but we don't support it yet.
-            assert not self.args.use_lora, "Gradient checkpointing is incompatible with LoRA"
-            self.model.gradient_checkpointing_enable()
+            # Use non-reentrant mode for gradient checkpointing
+            self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 
         logger.info(f"[Rank {dist.get_rank()}] Model initialized with FSDP")
 
