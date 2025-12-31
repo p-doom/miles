@@ -6,13 +6,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-import safetensors.torch
 import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
-from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict, get_model_state_dict, StateDictOptions
+from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
 from torch.distributed.checkpoint.stateful import Stateful
-from miles.models.peft import LoRAConfig
+
+from .lora_utils import is_lora_model
 
 logger = logging.getLogger(__name__)
 
@@ -20,53 +20,45 @@ logger = logging.getLogger(__name__)
 class ModelState(Stateful):
     """Wrapper for model state only."""
 
-    def __init__(self, model, keys_filter=None):
+    def __init__(self, model, lora_only: bool = False):
         self.model = model
-        self.keys_filter = keys_filter
+        self.lora_only = lora_only
+        self._key = "adapter" if lora_only else "model"
 
     def state_dict(self):
         model_state_dict, _ = get_state_dict(self.model, optimizers=[])
-        if self.keys_filter:
-            model_state_dict = {k: v for k, v in model_state_dict.items() if self.keys_filter(k)}
-        return {"model": model_state_dict}
+        if self.lora_only:
+            model_state_dict = {k: v for k, v in model_state_dict.items() if "lora_" in k}
+        return {self._key: model_state_dict}
 
     def load_state_dict(self, state_dict):
-        options = None
-        if self.keys_filter:
-            # For filtered loading (e.g., LoRA), use strict=False to allow partial loading
-            options = StateDictOptions(strict=False)
-        set_state_dict(
-            self.model, optimizers=[], 
-            model_state_dict=state_dict["model"], 
-            optim_state_dict=None,
-            options=options
-        )
+        data = state_dict[self._key]
+
+        if self.lora_only:
+            full_state_dict, _ = get_state_dict(self.model, optimizers=[])
+            full_state_dict.update(data)
+            set_state_dict(self.model, optimizers=[], model_state_dict=full_state_dict, optim_state_dict=None)
+        else:
+            set_state_dict(self.model, optimizers=[], model_state_dict=data, optim_state_dict=None)
 
 
 class OptimizerState(Stateful):
     """Wrapper for optimizer state only."""
 
-    def __init__(self, model, optimizer, keys_filter=None):
+    def __init__(self, model, optimizer):
         self.model = model
         self.optimizer = optimizer
-        self.keys_filter = keys_filter
 
     def state_dict(self):
         _, optimizer_state_dict = get_state_dict(self.model, optimizers=self.optimizer)
-        if self.keys_filter:
-            optimizer_state_dict = {k: v for k, v in optimizer_state_dict.items() if self.keys_filter(k)}
         return {"optim": optimizer_state_dict}
 
     def load_state_dict(self, state_dict):
-        options = None
-        if self.keys_filter:
-            # For filtered loading (e.g., LoRA), use strict=False to allow partial loading
-            options = StateDictOptions(strict=False)
         set_state_dict(
-            self.model, optimizers=self.optimizer, 
-            model_state_dict=None, 
+            self.model,
+            optimizers=self.optimizer,
+            model_state_dict=None,
             optim_state_dict=state_dict["optim"],
-            options=options
         )
 
 
@@ -127,31 +119,28 @@ def load(actor: Any) -> dict[str, Any] | None:
     model_dir = checkpoint_dir / "model"
     optimizer_dir = checkpoint_dir / "optimizer"
     lr_scheduler_dir = checkpoint_dir / "lr_scheduler"
+    lora_dir = checkpoint_dir / "adapter"
 
-    if not model_dir.exists():
-        logger.info(f"[FSDP] Model checkpoint {model_dir} not found; skipping load.")
+    lora_only = lora_dir.exists() and is_lora_model(actor.model)
+    load_model_dir = lora_dir if lora_only else model_dir
+
+    if not load_model_dir.exists():
+        logger.info(f"[FSDP] No model checkpoint found at {model_dir} or {lora_dir}; skipping load.")
         return None
 
-    keys_filter = None
-    if actor.args.use_lora:
-        keys_filter = lambda k: "lora_" in k
-        logger.info("[FSDP] LoRA mode: loading only LoRA weights from checkpoint")
-
-    # Load model weights (always)
-    model_state = ModelState(actor.model, keys_filter=keys_filter)
+    model_state = ModelState(actor.model, lora_only=lora_only)
     state_dict = {"model_state": model_state}
-
     try:
-        dcp.load(state_dict=state_dict, checkpoint_id=str(model_dir))
-        logger.info(f"[FSDP] Loaded model from {model_dir}")
+        dcp.load(state_dict=state_dict, checkpoint_id=str(load_model_dir))
+        logger.info(f"[FSDP] Loaded {'LoRA adapter' if lora_only else 'model'} from {load_model_dir}")
     except Exception as e:
-        logger.error(f"[FSDP] Failed to load model from {model_dir}: {e}")
+        logger.error(f"[FSDP] Failed to load {'LoRA adapter' if lora_only else 'model'} from {load_model_dir}: {e}")
         return None
 
     # Load optimizer state (optional)
     load_optimizer = not getattr(actor.args, "no_load_optim", False) and hasattr(actor, "optimizer")
     if load_optimizer and optimizer_dir.exists():
-        optimizer_state = OptimizerState(actor.model, actor.optimizer, keys_filter=keys_filter)
+        optimizer_state = OptimizerState(actor.model, actor.optimizer)
         optim_state_dict = {"optim_state": optimizer_state}
         try:
             dcp.load(state_dict=optim_state_dict, checkpoint_id=str(optimizer_dir))
@@ -216,7 +205,7 @@ def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None) -> None
     dist.barrier()
 
 
-def save(actor: Any, iteration: int, keys_filter=None) -> None:
+def save(actor: Any, iteration: int) -> None:
     """Save checkpoint to disk.
 
     Saves model weights and optimizer state to separate directories.
@@ -239,13 +228,23 @@ def save(actor: Any, iteration: int, keys_filter=None) -> None:
     dist.barrier()
 
     # Save model weights
-    model_state = ModelState(actor.model, keys_filter=keys_filter)
+    lora_only = is_lora_model(actor.model)
+    if lora_only:
+        save_dir = checkpoint_dir / "adapter"
+        if dist.get_rank() == 0:
+            save_dir.mkdir(parents=True, exist_ok=True)
+        dist.barrier()
+    else:
+        save_dir = model_dir
+
+    model_state = ModelState(actor.model, lora_only=lora_only)
     state_dict = {"model_state": model_state}
-    dcp.save(state_dict, checkpoint_id=str(model_dir))
+    dcp.save(state_dict, checkpoint_id=str(save_dir))
+    logger.info(f"[FSDP] Saved {'LoRA adapter' if lora_only else 'model'} to {save_dir}")
 
     # Save optimizer state
     if hasattr(actor, "optimizer") and actor.optimizer is not None:
-        optimizer_state = OptimizerState(actor.model, actor.optimizer, keys_filter=keys_filter)
+        optimizer_state = OptimizerState(actor.model, actor.optimizer)
         optim_state_dict = {"optim_state": optimizer_state}
         dcp.save(optim_state_dict, checkpoint_id=str(optimizer_dir))
 
@@ -275,29 +274,4 @@ def save(actor: Any, iteration: int, keys_filter=None) -> None:
         tracker_file.write_text(str(step_id))
         logger.info(f"[FSDP] Saved checkpoint to {checkpoint_dir}")
 
-    if actor.args.use_lora:
-        _save_hf_lora(actor, checkpoint_dir)
-
     dist.barrier()
-
-
-def _save_hf_lora(actor: Any, checkpoint_dir: Path) -> None:
-    """Save LoRA adapter in Hugging Face PEFT format."""
-
-    options = dcp.state_dict.StateDictOptions(full_state_dict=True, cpu_offload=True)
-    full_state_dict = get_model_state_dict(actor.model, options=options)
-    
-    if dist.get_rank() == 0:
-        lora_config = LoRAConfig(
-            lora_rank=actor.args.lora_rank,
-            lora_alpha=actor.args.lora_alpha,
-            lora_dropout=actor.args.lora_dropout,
-            target_modules=actor.args.lora_target_modules,
-        )
-        peft_config = lora_config.to_hf_peft_config()
-        with open(checkpoint_dir / "adapter_config.json", "w") as f:
-            json.dump(peft_config, f, indent=2)
-
-        lora_state_dict = {k: v for k, v in full_state_dict.items() if "lora_" in k}
-        safetensors.torch.save_file(lora_state_dict, checkpoint_dir / "adapter_model.safetensors")
-        logger.info(f"[FSDP] Saved HF LoRA adapter to {checkpoint_dir}")

@@ -10,7 +10,6 @@ from transformers import AutoConfig
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
-from miles.models.peft import add_lora_arguments
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 
 from miles.utils.logging_utils import configure_logger
@@ -1256,6 +1255,47 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         if add_custom_arguments is not None:
             parser = add_custom_arguments(parser)
 
+        def add_lora_arguments(parser):
+            """Add LoRA arguments matching PR 326/377 style."""
+            group = parser.add_argument_group(title="LoRA")
+
+            group.add_argument(
+                "--lora-rank",
+                type=int,
+                default=0,
+                help="LoRA rank. Set to 0 to disable LoRA (default: 0).",
+            )
+            group.add_argument(
+                "--lora-alpha",
+                type=int,
+                default=16,
+                help="LoRA alpha parameter (default: 16).",
+            )
+            group.add_argument(
+                "--target-modules",
+                type=str,
+                default=None,
+                help=(
+                    "Target modules for LoRA adaptation. "
+                    "Can be 'all-linear', a single module name, or comma-separated module names. "
+                    "Example: 'q_proj,k_proj,v_proj' (default: None)"
+                ),
+            )
+            group.add_argument(
+                "--exclude-modules",
+                type=str,
+                default=None,
+                help="Comma-separated list of modules to exclude from LoRA adaptation (default: None).",
+            )
+            group.add_argument(
+                "--lora-adapter-path",
+                type=str,
+                default=None,
+                help="Path to load pre-trained LoRA adapter weights (default: None).",
+            )
+
+            return parser
+
         parser = add_cluster_arguments(parser)
         parser = add_train_arguments(parser)
         parser = add_lora_arguments(parser)
@@ -1402,6 +1442,34 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
+
+    # LoRA validation
+    if args.lora_rank > 0:
+        if args.train_backend == "megatron":
+            raise NotImplementedError(
+                "LoRA is not yet implemented for Megatron backend. "
+                "Please use FSDP backend (--train-backend fsdp) or disable LoRA (--lora-rank 0)."
+            )
+        if args.target_modules is None:
+            raise ValueError("'--target-modules' is required when LoRA is enabled (--lora-rank > 0).")
+
+        # Process target_modules into a list
+        if args.target_modules == "all-linear":
+            modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        elif "," in args.target_modules:
+            modules = [m.strip() for m in args.target_modules.split(",")]
+        else:
+            modules = [args.target_modules]
+
+        if args.exclude_modules:
+            exclude_set = (
+                set(m.strip() for m in args.exclude_modules.split(","))
+                if "," in args.exclude_modules
+                else {args.exclude_modules}
+            )
+            modules = [m for m in modules if m not in exclude_set]
+
+        args.target_modules = modules
 
     if args.kl_coef != 0 or args.use_kl_loss:
         if not os.path.exists(args.ref_load):

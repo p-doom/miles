@@ -25,24 +25,15 @@ from itertools import accumulate
 
 import torch
 import torch.distributed as dist
+from ring_flash_attn import substitute_hf_flash_attn, update_ring_flash_attn_params
 from torch.distributed.device_mesh import init_device_mesh
 from tqdm import tqdm
 from transformers import AutoConfig
 
-from ring_flash_attn import substitute_hf_flash_attn, update_ring_flash_attn_params
-
-from miles.models.peft import LoRAConfig, apply_lora
 from miles.backends.fsdp_utils import checkpoint
-from miles.backends.fsdp_utils.actor import (
-    apply_fsdp2,
-    get_logprob_and_entropy_with_cp,
-    sum_of_sample_mean,
-)
-from miles.backends.fsdp_utils.data_packing import (
-    pack_sequences,
-    pad_packed_sequence_with_cp,
-    unpack_sequences,
-)
+from miles.backends.fsdp_utils.actor import apply_fsdp2, get_logprob_and_entropy_with_cp, sum_of_sample_mean
+from miles.backends.fsdp_utils.data_packing import pack_sequences, pad_packed_sequence_with_cp, unpack_sequences
+from miles.backends.fsdp_utils.lora_utils import apply_lora_to_model, is_lora_model
 from miles.backends.fsdp_utils.lr_scheduler import get_lr_scheduler
 from miles.rollout.data_source import RolloutDataSource
 from miles.utils import tracking_utils
@@ -158,9 +149,7 @@ class SFTTrainer:
         if self.args.true_on_policy_mode:
             from sglang.srt.batch_invariant_ops import enable_batch_invariant_mode
 
-            from miles.backends.fsdp_utils.models.qwen3_moe import (
-                apply_true_on_policy_patch_for_qwen3_moe,
-            )
+            from miles.backends.fsdp_utils.models.qwen3_moe import apply_true_on_policy_patch_for_qwen3_moe
 
             logger.info("SFTTrainer: enabling batch_invariant_mode for true-on-policy")
             enable_batch_invariant_mode(
@@ -178,17 +167,11 @@ class SFTTrainer:
         """Load tokenizer and model config sequentially to avoid race conditions."""
         for i in range(dist.get_world_size()):
             if i == dist.get_rank():
-                self.hf_config = AutoConfig.from_pretrained(
-                    self.args.hf_checkpoint, trust_remote_code=True
-                )
-                self.tokenizer = load_tokenizer(
-                    self.args.hf_checkpoint, trust_remote_code=True
-                )
+                self.hf_config = AutoConfig.from_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
+                self.tokenizer = load_tokenizer(self.args.hf_checkpoint, trust_remote_code=True)
                 self.processor = None
                 if self.args.multimodal_keys:
-                    self.processor = load_processor(
-                        self.args.hf_checkpoint, trust_remote_code=True
-                    )
+                    self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)
             dist.barrier(group=get_gloo_group())
 
         # Initialize loss mask generator for SFT
@@ -237,10 +220,7 @@ class SFTTrainer:
 
     def _fsdp2_load_full_state_dict(self, model, full_state, device_mesh, cpu_offload):
         """Load full state dict into FSDP2 model with broadcast from rank 0."""
-        from torch.distributed.checkpoint.state_dict import (
-            StateDictOptions,
-            set_model_state_dict,
-        )
+        from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
 
         if dist.get_rank() == 0:
             model = model.to(device=torch.cuda.current_device(), non_blocking=True)
@@ -248,9 +228,7 @@ class SFTTrainer:
             model = model.to_empty(device=torch.cuda.current_device())
 
         is_cpu_offload = cpu_offload is not None
-        options = StateDictOptions(
-            full_state_dict=True, cpu_offload=is_cpu_offload, broadcast_from_rank0=True
-        )
+        options = StateDictOptions(full_state_dict=True, cpu_offload=is_cpu_offload, broadcast_from_rank0=True)
 
         set_model_state_dict(model, full_state, options=options)
 
@@ -288,22 +266,13 @@ class SFTTrainer:
                 attn_implementation=self.args.attn_implementation,
             )
 
-            if self.args.use_lora:
-                lora_config = LoRAConfig(
-                    lora_rank=self.args.lora_rank,
-                    lora_alpha=self.args.lora_alpha,
-                    lora_dropout=self.args.lora_dropout,
-                    target_modules=self.args.lora_target_modules,
-                )
-                model = apply_lora(model, lora_config)
-                logger.info(f"[Rank {dist.get_rank()}] Applied LoRA: {lora_config}")
+            if self.args.lora_rank > 0 or self.args.lora_adapter_path:
+                model = apply_lora_to_model(model, self.args)
 
         model.train()
         full_state = model.state_dict()
 
-        model = apply_fsdp2(
-            model, mesh=self.dp_mesh, cpu_offload=self.fsdp_cpu_offload, args=self.args
-        )
+        model = apply_fsdp2(model, mesh=self.dp_mesh, cpu_offload=self.fsdp_cpu_offload, args=self.args)
 
         model = self._fsdp2_load_full_state_dict(
             model,
@@ -315,23 +284,24 @@ class SFTTrainer:
         self.model = model
 
         if self.args.gradient_checkpointing:
-            # Use non-reentrant mode for gradient checkpointing
-            self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+            # Use non-reentrant mode for gradient checkpointing (required for PEFT/LoRA)
+            gc_kwargs = {"use_reentrant": False} if is_lora_model(self.model) else {}
+            self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gc_kwargs)
 
         logger.info(f"[Rank {dist.get_rank()}] Model initialized with FSDP")
 
     def _init_optimizer(self):
         """Initialize optimizer and learning rate scheduler."""
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
-        
-        if self.args.use_lora:
+
+        if is_lora_model(self.model):
             total_params = sum(p.numel() for p in self.model.parameters())
             trainable_count = sum(p.numel() for p in trainable_params)
             logger.info(
                 f"[Rank {dist.get_rank()}] LoRA: {trainable_count:,} trainable params "
                 f"out of {total_params:,} total ({100 * trainable_count / total_params:.2f}%)"
             )
-        
+
         if self.args.optimizer == "adam":
             self.optimizer = torch.optim.AdamW(
                 trainable_params,
@@ -351,7 +321,7 @@ class SFTTrainer:
         """Load checkpoint if available."""
         checkpoint_payload = checkpoint.load(self)
         checkpoint.finalize_load(self, checkpoint_payload)
-        
+
         if self.args.rollout_global_dataset and self.args.start_rollout_id > 0:
             self.data_source.load(self.args.start_rollout_id - 1)
 
@@ -372,10 +342,7 @@ class SFTTrainer:
             result.append(sample)
 
             if i == 0 and rollout_id == 0 and dist.get_rank() == 0:
-                logger.info(
-                    f"SFT rollout sample: tokens_len={len(token_ids)}, "
-                    f"response_length={response_length}"
-                )
+                logger.info(f"SFT rollout sample: tokens_len={len(token_ids)}, " f"response_length={response_length}")
 
         return result
 
@@ -443,24 +410,19 @@ class SFTTrainer:
                         max_tokens,
                     )
                 )
-            num_microbatches = torch.tensor(
-                mbs_size_list, dtype=torch.int, device=torch.cuda.current_device()
-            )
+            num_microbatches = torch.tensor(mbs_size_list, dtype=torch.int, device=torch.cuda.current_device())
             dist.all_reduce(num_microbatches, op=dist.ReduceOp.MAX, group=self.dp_group)
             num_microbatches = num_microbatches.tolist()
         else:
-            num_microbatches = [
-                self.args.global_batch_size // (self.args.micro_batch_size * self.dp_size)
-            ] * (len(tokens) // local_batch_size)
+            num_microbatches = [self.args.global_batch_size // (self.args.micro_batch_size * self.dp_size)] * (
+                len(tokens) // local_batch_size
+            )
 
         start = 0
         for mbs_size in num_microbatches:
             end = start + local_batch_size
             # Create dummy advantages/returns for SFT (not used but required by pack_sequences)
-            dummy_advantages = [
-                torch.zeros(rollout_data["response_lengths"][i])
-                for i in range(start, end)
-            ]
+            dummy_advantages = [torch.zeros(rollout_data["response_lengths"][i]) for i in range(start, end)]
             packed_batches.extend(
                 pack_sequences(
                     rollout_data["tokens"][start:end],
@@ -491,12 +453,8 @@ class SFTTrainer:
             cu_seqlens = packed_sequence["cu_seqlens"]
             update_ring_flash_attn_params(cu_seqlens, self.cp_group)
 
-            input_ids = torch.chunk(
-                packed_sequence["tokens"].unsqueeze(0), self.cp_size, dim=1
-            )[self.cp_rank]
-            position_ids = torch.chunk(
-                packed_sequence["position_ids"].unsqueeze(0), self.cp_size, dim=1
-            )[self.cp_rank]
+            input_ids = torch.chunk(packed_sequence["tokens"].unsqueeze(0), self.cp_size, dim=1)[self.cp_rank]
+            position_ids = torch.chunk(packed_sequence["position_ids"].unsqueeze(0), self.cp_size, dim=1)[self.cp_rank]
 
         model_args = {
             "input_ids": input_ids,
@@ -511,13 +469,9 @@ class SFTTrainer:
 
     def _compute_sft_loss(self, unpacked_batches: list[dict], logits: torch.Tensor):
         """Compute SFT loss (negative log likelihood)."""
-        loss_masks = [
-            batch["loss_masks"].to(device=logits.device) for batch in unpacked_batches
-        ]
+        loss_masks = [batch["loss_masks"].to(device=logits.device) for batch in unpacked_batches]
         response_lengths = [batch["response_lengths"] for batch in unpacked_batches]
-        log_probs = torch.cat(
-            [batch["cur_log_probs"] for batch in unpacked_batches], dim=0
-        )
+        log_probs = torch.cat([batch["cur_log_probs"] for batch in unpacked_batches], dim=0)
         loss = -sum_of_sample_mean(log_probs, response_lengths, loss_masks)
 
         if log_probs.numel() == 0:
@@ -634,10 +588,12 @@ class SFTTrainer:
             packed_batches, accum = self._packed_data(rollout_data)
 
             if len(accum) == 0:
-                logger.warning(f"[Rank {dist.get_rank()}] No batches to validate on rollout {rollout_id}, validation step {v_step}")
+                logger.warning(
+                    f"[Rank {dist.get_rank()}] No batches to validate on rollout {rollout_id}, validation step {v_step}"
+                )
                 return
 
-            for mbs_id, packed_batch in enumerate(packed_batches):
+            for _mbs_id, packed_batch in enumerate(packed_batches):
                 reported = self._val_step(packed_batch)
                 for k, v in reported.items():
                     reported_accum.setdefault(k, []).append(v)
@@ -648,12 +604,12 @@ class SFTTrainer:
         dist.all_gather_object(reduced_aggregated, aggregated, group=self.dp_group)
         aggregated = {}
         for k in reported_accum.keys():
-            aggregated[k] = sum([r[k] for r in reduced_aggregated]) / (self.args.global_batch_size * self.args.val_steps)
+            aggregated[k] = sum([r[k] for r in reduced_aggregated]) / (
+                self.args.global_batch_size * self.args.val_steps
+            )
         reported_accum.clear()
         if dist.get_rank() == 0:
-            log_dict = {
-                f"val/{k}": (val.item() if torch.is_tensor(val) else val) for k, val in aggregated.items()
-            }
+            log_dict = {f"val/{k}": (val.item() if torch.is_tensor(val) else val) for k, val in aggregated.items()}
             logger.info(f"step {self.global_step}: {log_dict}")
             log_dict["val/step"] = self.global_step
             tracking_utils.log(self.args, log_dict, step_key="val/step")
@@ -681,18 +637,13 @@ class SFTTrainer:
         _, reported = self._compute_sft_loss(unpacked_batches, logits)
         return reported
 
-
     def save_model(self, iteration: int):
         """Save model checkpoint."""
         if self.args.save is None:
             return
-            
-        keys_filter = None
-        if self.args.use_lora:
-            keys_filter = lambda k: "lora_" in k
-            
-        checkpoint.save(self, iteration, keys_filter=keys_filter)
-        
+
+        checkpoint.save(self, iteration)
+
         if self.args.rollout_global_dataset:
             self.data_source.save(iteration)
 
@@ -703,8 +654,12 @@ class SFTTrainer:
             f"rollout_id {self.args.start_rollout_id} -> {self.args.num_rollout}"
         )
         if self.args.val_prompt_data:
-            assert self.args.val_interval > 0, f"val_interval must be greater than 0 when val_prompt_data is provided, got {self.args.val_interval}"
-            assert self.args.val_steps > 0, f"val_steps must be greater than 0 when val_prompt_data is provided, got {self.args.val_steps}"
+            assert (
+                self.args.val_interval > 0
+            ), f"val_interval must be greater than 0 when val_prompt_data is provided, got {self.args.val_interval}"
+            assert (
+                self.args.val_steps > 0
+            ), f"val_steps must be greater than 0 when val_prompt_data is provided, got {self.args.val_steps}"
 
         # calculate val loss at the beginning of training
         if self.args.val_prompt_data and self.args.start_rollout_id == 0:
@@ -714,9 +669,7 @@ class SFTTrainer:
             self.train_one_rollout(rollout_id)
 
             # Save checkpoint periodically
-            if should_run_periodic_action(
-                rollout_id, self.args.save_interval, self.num_rollout_per_epoch
-            ):
+            if should_run_periodic_action(rollout_id, self.args.save_interval, self.num_rollout_per_epoch):
                 self.save_model(rollout_id)
 
             # Calculate val loss periodically
@@ -754,5 +707,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
