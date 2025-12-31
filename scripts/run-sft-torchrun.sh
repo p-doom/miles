@@ -54,11 +54,9 @@ SFT_ARGS=(
 )
 
 LORA_ARGS=(
-    --use-lora
     --lora-rank 8
     --lora-alpha 16
-    --lora-dropout 0.0
-    --lora-target-modules q_proj v_proj
+    --target-modules q_proj,v_proj
 )
 
 OPTIMIZER_ARGS=(
