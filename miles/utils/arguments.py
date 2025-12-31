@@ -10,6 +10,7 @@ from transformers import AutoConfig
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
+from miles.models.peft import add_lora_arguments
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 
 from miles.utils.logging_utils import configure_logger
@@ -467,13 +468,29 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "The path to the prompt data. "
-                    "Currently we only support jsonl format, and each line should contains --input-key and --label-key, "
+                    "The path to the prompt data."
+                    "Currently we only support jsonl/parquet format, and each line should contains --input-key and --label-key, "
                     "which will be used as the prompt and the label respectively. "
                     "If you want to use a custom template, you can set --apply-chat-template to true, in that case, "
                     "the input should be the same structure as an openai message, e.g. [{'role': 'user', 'content': 'blabla'}]. "
                 ),
             )
+            # validation loss
+            parser.add_argument(
+                "--val-prompt-data",
+                type=str,
+                default=None,
+                help=(
+                    "The path to the validation prompt data."
+                    "Currently we only support jsonl/parquet format, and each line should contains --input-key and --label-key, "
+                    "which will be used as the validation prompt and the label respectively. "
+                    "If you want to use a custom template, you can set --apply-chat-template to true, in that case, "
+                    "the input should be the same structure as an openai message, e.g. [{'role': 'user', 'content': 'blabla'}]. "
+                ),
+            )
+            parser.add_argument("--val-interval", type=int, default=0, help="Validation interval.")
+            parser.add_argument("--val-steps", type=int, default=0, help="Number of validation steps.")
+
             parser.add_argument("--apply-chat-template", action="store_true", default=False)
             # Temporarily be JSON-serialized str, will be a real dict after using Omegaconf
             parser.add_argument("--apply-chat-template-kwargs", type=json.loads, default="{}")
@@ -1241,6 +1258,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
         parser = add_cluster_arguments(parser)
         parser = add_train_arguments(parser)
+        parser = add_lora_arguments(parser)
         parser = add_rollout_arguments(parser)
         parser = add_fault_tolerance_arguments(parser)
         parser = add_data_arguments(parser)
