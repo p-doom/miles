@@ -2632,6 +2632,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Number of session server instances.",
             )
             parser.add_argument(
+                "--session-server-keepalive-timeout",
+                type=int,
+                default=5,
+                help="Session HTTP server idle timeout in seconds. For agents with a bounded client "
+                "lifetime, set this above that lifetime so the server cannot retire a pooled "
+                "connection while the agent may still use it.",
+            )
+            parser.add_argument(
                 "--session-server-ip",
                 type=str,
                 default=None,
@@ -3262,6 +3270,8 @@ def miles_validate_args(args):
     if args.recompute_logprobs_via_prefill:
         assert args.true_on_policy_mode, "--recompute-logprobs-via-prefill requires --true-on-policy-mode"
 
+    if getattr(args, "session_server_keepalive_timeout", 5) < 1:
+        raise ValueError("--session-server-keepalive-timeout must be positive")
     if args.use_session_server not in (False, True, "v1", "v2"):
         raise ValueError(
             f"--use-session-server={args.use_session_server!r} is not a known session server "

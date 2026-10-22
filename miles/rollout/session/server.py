@@ -90,7 +90,14 @@ def run_session_server(config: SessionServerConfig):
         config.port,
         config.backend_url,
     )
-    uvicorn.run(server.app, host=config.host, port=config.port, log_level="info", access_log=False)
+    uvicorn.run(
+        server.app,
+        host=config.host,
+        port=config.port,
+        log_level="info",
+        access_log=False,
+        timeout_keep_alive=config.keepalive_timeout,
+    )
 
 
 def main(argv: list[str] | None = None) -> None:

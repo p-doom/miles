@@ -1,5 +1,7 @@
 from typing import Any
 
+from pydantic import Field
+
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 
@@ -31,6 +33,7 @@ class SessionServerConfig(FrozenStrictBaseModel):
     rollout_top_logprobs_num: int
     rollout_sampling_logprobs_mode: str
     rollout_temperature: float
+    keepalive_timeout: int = Field(default=5, ge=1)
 
 
 def compute_session_server_config(
@@ -64,4 +67,5 @@ def compute_session_server_config(
         rollout_top_logprobs_num=args.rollout_top_logprobs_num,
         rollout_sampling_logprobs_mode=args.rollout_sampling_logprobs_mode,
         rollout_temperature=getattr(args, "rollout_temperature", 1.0),
+        keepalive_timeout=getattr(args, "session_server_keepalive_timeout", 5),
     )
