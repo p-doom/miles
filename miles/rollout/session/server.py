@@ -23,7 +23,7 @@ from miles.utils.workers.argv_utils import parse_config_argv
 logger = logging.getLogger(__name__)
 
 # Request headers that must not be forwarded verbatim to the upstream backend.
-_DROP_REQUEST_HEADERS = ("content-length", "transfer-encoding", "host")
+_DROP_REQUEST_HEADERS = ("content-length", "transfer-encoding", "host", "idempotency-key")
 
 
 class SessionServer:
@@ -39,13 +39,12 @@ class SessionServer:
             timeout=httpx.Timeout(config.timeout),
         )
 
-        # Close the httpx connection pool when uvicorn shuts down to avoid FD leaks.
-        self.app.router.on_shutdown.append(self.client.aclose)
-
         # `retract` may recompute earlier rows and must return full R3; all other
         # pause modes preserve prior rows and can request only the appended R3.
         self.use_addition_r3 = config.pause_generation_mode != "retract"
         setup_session_routes(self.app, self, config, use_addition_r3=self.use_addition_r3)
+        # Registered after core.shutdown so owned inference is drained first.
+        self.app.router.on_shutdown.append(self.client.aclose)
 
     async def do_proxy(self, request: ProxyRequest, path: str, *, body: bytes, headers: dict) -> dict:
         url = f"{self.backend_url}/{path}"

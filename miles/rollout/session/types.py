@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field, StrictBool, StrictFloat, StrictInt, field_validator, model_validator
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel, StrictBaseModel
@@ -54,7 +56,12 @@ class SessionRecord(BaseModel):
     status_code: int
 
 
+class SessionCapabilities(FrozenStrictBaseModel):
+    chat_completions_idempotency: Literal[1] = 1
+
+
 class GetSessionResponse(BaseModel):
     session_id: str
     records: list[SessionRecord]
     metadata: dict = Field(default_factory=dict)
+    capabilities: SessionCapabilities = Field(default_factory=SessionCapabilities)

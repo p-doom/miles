@@ -86,6 +86,52 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
 For structured parsing, the payload may use SGLang's
 `ChatCompletionRequest`-compatible fields, which extend the OpenAI format.
 
+### Recover a disconnected completion
+
+Both session versions advertise `capabilities.chat_completions_idempotency = 1`
+on `GET /sessions/{id}`. A client can recover a non-streaming OpenAI completion
+by generating one UUID per logical call and sending it as `Idempotency-Key`.
+Retry with identical request bytes and the same key. A new logical call uses a
+new key even if its messages are identical. The header must occur once and
+contain 1–128 printable ASCII characters without whitespace.
+
+Within one live owning session-server process, each accepted key invokes the
+existing generation/commit operation at most once. Concurrent duplicates join
+the owned task; completed duplicates receive the original application status,
+body, tool-call IDs, usage and headers. Responses echo `Idempotency-Key` and
+set `X-Miles-Replayed: true` for a join or replay (`false` for the original).
+Cancelling an HTTP waiter does not cancel its owned generation. Results remain
+available through later turns and model-weight updates until session deletion.
+
+Identity covers method, route, query, raw body and normalized forwarded headers,
+including repeated values. The key itself and `host`, `connection`,
+`keep-alive`, `content-length`, and `transfer-encoding` are excluded. A changed
+request under an existing key returns 409 with `idempotency_conflict`.
+Keyed streaming and Anthropic requests return 400. Unkeyed behavior is unchanged.
+Missing or closing sessions return 404; clients must not recreate them on retry.
+
+Two positive launch limits bound replay storage per session:
+
+- `--session-replay-max-entries` defaults to 256, counting pending operations,
+  completed outcomes and terminal failure markers.
+- `--session-replay-max-bytes` defaults to 67,108,864 retained body/header bytes.
+
+These are ceilings, not preallocated memory. No TTL, eviction or weight update
+removes an accepted key. Admission at capacity returns 503 with
+`idempotency_capacity_exceeded` before generation. If an operation's response
+exceeds the remaining byte budget, its key retains a small terminal capacity
+marker and every attempt returns 503; an uncached success is never sent.
+Application/upstream errors are also terminal and are replayed without retrying
+generation. Unexpected exceptions produce a sanitized terminal 500.
+
+Deletion closes admission, cancels and drains owned tasks, then releases replay
+state. A waiter stopped by deletion receives 404. Shutdown drains owned work
+before closing the shared upstream HTTP client. This protocol provides no
+durable recovery across server crashes, streaming support, Anthropic support or
+additional guarantee about execution within downstream inference infrastructure.
+The ordinary HTTP idle timeout remains five seconds; episode deadlines remain
+time and resource budgets.
+
 
 ### Where the agent runs
 

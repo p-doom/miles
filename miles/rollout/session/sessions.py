@@ -86,6 +86,8 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
         registry = SessionRegistry(tokenizer, tito_tokenizer=tito_tokenizer, message_matcher=message_matcher)
         core = SessionCore(backend, registry, config, config.instance_id, use_addition_r3=use_addition_r3)
 
+    app.router.on_shutdown.append(core.shutdown)
+
     @app.exception_handler(SessionError)
     async def session_error_handler(request: Request, exc: SessionError):
         return JSONResponse(status_code=exc.status_code, content={"error": str(exc)})
@@ -123,11 +125,12 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
     @app.post("/sessions/{session_id}/v1/chat/completions")
     async def chat_completions(request: Request, session_id: str):
         body = await request.body()
-        return await core.chat_completions(
+        return await core.dispatch_chat_completions(
             session_id,
             method=request.method,
+            route=request.url.path,
             query=request.url.query,
-            headers=dict(request.headers),
+            raw_headers=list(request.headers.raw),
             body=body,
         )
 
@@ -135,6 +138,8 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
     @app.post("/sessions/{session_id}/v1/messages")
     async def anthropic_messages(request: Request, session_id: str):
         """Serve Anthropic Messages through the OpenAI session path."""
+        if "idempotency-key" in request.headers:
+            return JSONResponse(status_code=400, content={"error": "Keyed Anthropic requests are unsupported"})
         if (
             anthropic_utils is None
             or convert_response is None

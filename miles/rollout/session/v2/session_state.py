@@ -28,6 +28,7 @@ from typing import Any
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError, TokenizationError, TruncatedGenerationError
 from miles.rollout.session.linear_trajectory import SessionRegistry, assert_pretokenized_prefix
+from miles.rollout.session.replay import ReplayState
 from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request
 from miles.rollout.session.types import SessionRecord
 from miles.rollout.session.v2.tree_trajectory import AttachPoint, SessionTree, TrajectoryNode
@@ -48,6 +49,7 @@ class SessionStateV2:
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
     closing: bool = field(default=False, repr=False, compare=False)
+    replay: ReplayState = field(default_factory=ReplayState, repr=False, compare=False)
     tree: SessionTree = field(default_factory=SessionTree)
     evaluation: bool = False
     sampling_defaults: dict[str, Any] = field(default_factory=dict)

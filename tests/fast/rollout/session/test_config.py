@@ -6,6 +6,8 @@ import pytest
 from pydantic import ValidationError
 
 from miles.rollout.session.config import SessionServerConfig, compute_session_server_config
+from miles.rollout.session.types import GetSessionResponse, SessionCapabilities
+from miles.utils.workers.argv_utils import config_to_argv, parse_config_argv
 
 _ARGS_TO_CONFIG_FIELD = {
     "miles_router_timeout": "timeout",
@@ -31,6 +33,9 @@ _ARGS_TO_CONFIG_FIELD = {
     "rollout_top_logprobs_num": "rollout_top_logprobs_num",
     "rollout_sampling_logprobs_mode": "rollout_sampling_logprobs_mode",
     "rollout_temperature": "rollout_temperature",
+    "session_server_keepalive_timeout": "keepalive_timeout",
+    "session_replay_max_entries": "replay_max_entries",
+    "session_replay_max_bytes": "replay_max_bytes",
 }
 
 _CALL_SITE_FIELDS = ("host", "port", "instance_id", "backend_url")
@@ -67,6 +72,9 @@ _DISTINCT_ARGS_VALUES = dict(
     rollout_top_logprobs_num=32,
     rollout_sampling_logprobs_mode="support",
     rollout_temperature=0.7,
+    session_server_keepalive_timeout=19,
+    session_replay_max_entries=17,
+    session_replay_max_bytes=9001,
 )
 
 
@@ -129,6 +137,15 @@ class TestComputeSessionServerConfig:
         )
         assert config.rollout_temperature == 1.0
 
+    def test_session_replay_limits_survive_config_argv_roundtrip(self):
+        config = compute_session_server_config(
+            _make_args(), host="127.0.0.1", port=5001, instance_id=None, backend_url="http://127.0.0.1:3000"
+        )
+
+        assert config.replay_max_entries == 17
+        assert config.replay_max_bytes == 9001
+        assert parse_config_argv(SessionServerConfig, config_to_argv(config)) == config
+
 
 _COMPLETE_CONFIG_KWARGS = dict(
     host="127.0.0.1",
@@ -158,6 +175,9 @@ _COMPLETE_CONFIG_KWARGS = dict(
     rollout_top_logprobs_num=0,
     rollout_sampling_logprobs_mode="selected",
     rollout_temperature=1.0,
+    keepalive_timeout=5,
+    replay_max_entries=256,
+    replay_max_bytes=67108864,
 )
 
 
@@ -192,12 +212,21 @@ class TestSessionServerConfig:
         with pytest.raises(ValidationError):
             SessionServerConfig(**{**_COMPLETE_CONFIG_KWARGS, "use_session_server": value})
 
-    @pytest.mark.parametrize("missing", sorted(SessionServerConfig.model_fields))
+    @pytest.mark.parametrize(
+        "missing", sorted(name for name, field in SessionServerConfig.model_fields.items() if field.is_required())
+    )
     def test_every_field_is_required(self, missing: str):
-        """Omitting any single field must fail, so none can be silently defaulted."""
+        """Required launch fields cannot be silently defaulted."""
         kwargs = {name: value for name, value in _COMPLETE_CONFIG_KWARGS.items() if name != missing}
         with pytest.raises(ValidationError):
             SessionServerConfig(**kwargs)
+
+    def test_transport_policy_defaults(self):
+        defaults = {"replay_max_entries": 256, "replay_max_bytes": 67_108_864, "keepalive_timeout": 5}
+        config = SessionServerConfig(
+            **{name: value for name, value in _COMPLETE_CONFIG_KWARGS.items() if name not in defaults}
+        )
+        assert {name: getattr(config, name) for name in defaults} == defaults
 
     def test_unknown_field_is_rejected(self):
         """An unrecognized keyword must fail validation instead of being silently ignored."""
@@ -209,3 +238,17 @@ class TestSessionServerConfig:
         config = SessionServerConfig(**_COMPLETE_CONFIG_KWARGS)
         with pytest.raises(ValidationError):
             config.port = 5002
+
+    @pytest.mark.parametrize("field", ["replay_max_entries", "replay_max_bytes"])
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_replay_limits_must_be_positive(self, field: str, value: int):
+        with pytest.raises(ValidationError):
+            SessionServerConfig(**{**_COMPLETE_CONFIG_KWARGS, field: value})
+
+
+def test_get_session_response_advertises_typed_chat_completion_idempotency():
+    response = GetSessionResponse(session_id="session", records=[])
+
+    assert response.capabilities == SessionCapabilities(chat_completions_idempotency=1)
+    with pytest.raises(ValidationError):
+        response.capabilities.chat_completions_idempotency = 2

@@ -2635,9 +2635,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--session-server-keepalive-timeout",
                 type=int,
                 default=5,
-                help="Session HTTP server idle timeout in seconds. For agents with a bounded client "
-                "lifetime, set this above that lifetime so the server cannot retire a pooled "
-                "connection while the agent may still use it.",
+                help="Session HTTP server idle timeout in seconds. Keyed request recovery is independent of this timeout.",
+            )
+            parser.add_argument(
+                "--session-replay-max-entries",
+                type=int,
+                default=256,
+                help="Maximum accepted idempotency keys per session, including pending operations and terminal failures.",
+            )
+            parser.add_argument(
+                "--session-replay-max-bytes",
+                type=int,
+                default=67108864,
+                help="Maximum bytes of retained replay response bodies and headers per session; no live-session eviction.",
             )
             parser.add_argument(
                 "--session-server-ip",
@@ -3272,6 +3282,10 @@ def miles_validate_args(args):
 
     if getattr(args, "session_server_keepalive_timeout", 5) < 1:
         raise ValueError("--session-server-keepalive-timeout must be positive")
+    if args.session_replay_max_entries < 1:
+        raise ValueError("--session-replay-max-entries must be positive")
+    if args.session_replay_max_bytes < 1:
+        raise ValueError("--session-replay-max-bytes must be positive")
     if args.use_session_server not in (False, True, "v1", "v2"):
         raise ValueError(
             f"--use-session-server={args.use_session_server!r} is not a known session server "

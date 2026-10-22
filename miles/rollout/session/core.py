@@ -8,22 +8,34 @@ HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each 
 - ``collect_samples`` assembles training Samples from the session's records on the server (compute -> truncate -> merge, synchronously on the loop like the lock-free ``get_session``); deterministic assembly failures return 422 with the assertion text.
 """
 
+import asyncio
 import json
 import logging
 import time
 from dataclasses import dataclass
 
+from starlette.datastructures import Headers
 from starlette.responses import Response
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import (
+    SessionError,
     SessionNotFoundError,
     TokenizationError,
     UpstreamGenerationAbortedError,
     UpstreamResponseError,
 )
 from miles.rollout.session.linear_trajectory import SessionRegistry
+from miles.rollout.session.replay import (
+    CompletedOutcome,
+    PendingOperation,
+    ReplayOutcome,
+    ReplaySession,
+    TerminalFailure,
+    request_fingerprint,
+    request_key,
+)
 from miles.rollout.session.request_args import ClientResponseIntent, filter_turn_args, parse_chat_request
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS, ROLLOUT_SAMPLING_MASK_FIELDS, encode_samples
 from miles.rollout.session.samples.merge import (
@@ -307,16 +319,171 @@ class SessionCore:
 
     async def delete_session(self, session_id: str) -> Response:
         session = self.registry.get_session(session_id)
+        async with session.lock:
+            if session.closing:
+                raise SessionNotFoundError(f"session not found: session_id={session_id}")
+            session.closing = True
+        await self._drain_session(session_id, session)
+        return Response(status_code=204)
+
+    async def _drain_session(self, session_id: str, session: ReplaySession) -> None:
+        async with session.lock:
+            session.closing = True
+            pending = session.replay.pending_tasks()
+        for task in pending:
+            if not task.cancelling():
+                task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        async with session.lock:
+            session.replay.clear()
+            if self.registry.sessions.get(session_id) is session:
+                self.registry.remove_session(session_id)
+
+    async def shutdown(self) -> None:
+        """Drain session-owned work before the shared upstream client closes."""
+        sessions = tuple(self.registry.sessions.items())
+        for _, session in sessions:
+            async with session.lock:
+                session.closing = True
+        await asyncio.gather(*(self._drain_session(session_id, session) for session_id, session in sessions))
+
+    def _replay_event(self, event: str, session_id: str, key: str, session: ReplaySession) -> None:
+        logger.info(
+            "[session-replay] event=%s session_id=%s request_id=%s entries=%d retained_bytes=%d pending=%d",
+            event,
+            session_id,
+            key,
+            len(session.replay.entries),
+            session.replay.retained_bytes,
+            len(session.replay.pending_tasks()),
+        )
+
+    async def dispatch_chat_completions(
+        self,
+        session_id: str,
+        *,
+        method: str,
+        route: str,
+        query: str,
+        raw_headers: list[tuple[bytes, bytes]],
+        body: bytes,
+    ) -> Response:
+        """Admit one owned completion per key; all waiters receive fresh responses."""
+        session = self.registry.get_session(session_id)
         if session.closing:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
-        session.closing = True
-        # Acquire the lock so an in-flight chat finishes before we drop the session.
-        await session.lock.acquire()
         try:
-            self.registry.remove_session(session_id)
-        finally:
-            session.lock.release()
-        return Response(status_code=204)
+            key = request_key(raw_headers)
+        except ValueError as exc:
+            return Response(_render_json({"error": str(exc)}), status_code=400, media_type=JSON_MEDIA_TYPE)
+        headers = {
+            name: value for name, value in dict(Headers(raw=raw_headers)).items() if name.lower() != "idempotency-key"
+        }
+        if key is None:
+            return await self.chat_completions(session_id, method=method, query=query, headers=headers, body=body)
+        fingerprint = request_fingerprint(method=method, route=route, query=query, body=body, headers=raw_headers)
+        async with session.lock:
+            if session.closing:
+                raise SessionNotFoundError(f"session not found: session_id={session_id}")
+            entry = session.replay.entries.get(key)
+            replayed = entry is not None
+            if entry is not None and entry.fingerprint != fingerprint:
+                self._replay_event("conflicted", session_id, key, session)
+                return Response(
+                    _render_json({"error": "idempotency_conflict"}), status_code=409, media_type=JSON_MEDIA_TYPE
+                )
+            if entry is None:
+                try:
+                    payload = json.loads(body)
+                    if not isinstance(payload, dict) or payload.get("stream", False) is not False:
+                        raise ValueError("Keyed chat completions require a JSON object with stream absent or false")
+                except (ValueError, UnicodeDecodeError) as exc:
+                    return Response(_render_json({"error": str(exc)}), status_code=400, media_type=JSON_MEDIA_TYPE)
+                if (
+                    len(session.replay.entries) >= self.config.replay_max_entries
+                    or session.replay.retained_bytes >= self.config.replay_max_bytes
+                ):
+                    self._replay_event("capacity-rejected", session_id, key, session)
+                    return TerminalFailure(fingerprint, "idempotency_capacity_exceeded").response()
+                task = asyncio.create_task(
+                    self._run_owned_completion(
+                        session_id,
+                        session,
+                        key=key,
+                        fingerprint=fingerprint,
+                        method=method,
+                        query=query,
+                        headers=headers,
+                        body=body,
+                    )
+                )
+                entry = PendingOperation(fingerprint, task)
+                session.replay.entries[key] = entry
+                self._replay_event("accepted", session_id, key, session)
+            else:
+                self._replay_event(
+                    "joined" if isinstance(entry, PendingOperation) else "replayed", session_id, key, session
+                )
+        if isinstance(entry, PendingOperation):
+            try:
+                outcome = await asyncio.shield(entry.task)
+            except asyncio.CancelledError:
+                # A cancelled HTTP waiter must still propagate cancellation. Only
+                # cancellation of the owned operation by deletion becomes a 404.
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
+                if session.closing:
+                    raise SessionNotFoundError(f"session not found: session_id={session_id}") from None
+                raise
+        else:
+            outcome = entry
+        response = outcome.response()
+        response.headers["Idempotency-Key"] = key
+        response.headers["X-Miles-Replayed"] = str(replayed).lower()
+        return response
+
+    async def _run_owned_completion(
+        self,
+        session_id: str,
+        session: ReplaySession,
+        *,
+        key: str,
+        fingerprint: str,
+        method: str,
+        query: str,
+        headers: dict,
+        body: bytes,
+    ) -> ReplayOutcome:
+        try:
+            response = await self.chat_completions(session_id, method=method, query=query, headers=headers, body=body)
+            outcome: ReplayOutcome = CompletedOutcome.capture(fingerprint, response)
+        except SessionError as exc:
+            response = Response(
+                _render_json({"error": str(exc)}), status_code=exc.status_code, media_type=JSON_MEDIA_TYPE
+            )
+            outcome = CompletedOutcome.capture(fingerprint, response)
+        except asyncio.CancelledError:
+            self._replay_event("cancelled", session_id, key, session)
+            if session.closing:
+                return TerminalFailure(fingerprint, "session_deleted")
+            outcome = TerminalFailure(fingerprint, "internal_error")
+        except Exception:
+            logger.exception("[session-replay] unexpected failure session_id=%s request_id=%s", session_id, key)
+            outcome = TerminalFailure(fingerprint, "internal_error")
+        async with session.lock:
+            if session.closing:
+                return TerminalFailure(fingerprint, "session_deleted")
+            if isinstance(outcome, CompletedOutcome):
+                if outcome.retained_bytes > self.config.replay_max_bytes - session.replay.retained_bytes:
+                    outcome = TerminalFailure(fingerprint, "idempotency_capacity_exceeded")
+                    self._replay_event("capacity-rejected", session_id, key, session)
+                else:
+                    session.replay.retained_bytes += outcome.retained_bytes
+            session.replay.entries[key] = outcome
+            self._replay_event("completed", session_id, key, session)
+        return outcome
 
     async def chat_completions(
         self, session_id: str, *, method: str, query: str, headers: dict, body: bytes

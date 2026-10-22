@@ -68,6 +68,7 @@ _NOT_ACTUALLY_SECRET_ARG_NAMES = frozenset(
         "metadata_key",
         "opd_teacher_key",
         "reward_key",
+        "router_allow_requests_without_routing_key",
         "tool_key",
     }
 )
@@ -1784,6 +1785,28 @@ class TestSessionServerScalingArguments:
 
         assert args.session_server_port == 30000
         assert args.session_server_workers == 4
+
+    def test_session_replay_limits_have_run_wide_defaults_and_overrides(self):
+        defaults = self._parse([])
+        configured = self._parse(["--session-replay-max-entries", "32", "--session-replay-max-bytes", "4096"])
+
+        assert defaults.session_replay_max_entries == 256
+        assert defaults.session_replay_max_bytes == 67108864
+        assert configured.session_replay_max_entries == 32
+        assert configured.session_replay_max_bytes == 4096
+
+    @pytest.mark.parametrize(
+        ("flag", "value"),
+        [
+            ("--session-replay-max-entries", "0"),
+            ("--session-replay-max-entries", "-1"),
+            ("--session-replay-max-bytes", "0"),
+            ("--session-replay-max-bytes", "-1"),
+        ],
+    )
+    def test_session_replay_limits_must_be_positive(self, flag, value):
+        with pytest.raises(ValueError, match="must be positive"):
+            miles_validate_args(self._parse([flag, value]))
 
     def test_rejects_the_removed_end_port_form(self):
         with pytest.raises(SystemExit):

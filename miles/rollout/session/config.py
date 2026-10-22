@@ -33,6 +33,8 @@ class SessionServerConfig(FrozenStrictBaseModel):
     rollout_top_logprobs_num: int
     rollout_sampling_logprobs_mode: str
     rollout_temperature: float
+    replay_max_entries: int = Field(default=256, gt=0)
+    replay_max_bytes: int = Field(default=67_108_864, gt=0)
     keepalive_timeout: int = Field(default=5, ge=1)
 
 
@@ -67,5 +69,7 @@ def compute_session_server_config(
         rollout_top_logprobs_num=args.rollout_top_logprobs_num,
         rollout_sampling_logprobs_mode=args.rollout_sampling_logprobs_mode,
         rollout_temperature=getattr(args, "rollout_temperature", 1.0),
+        replay_max_entries=getattr(args, "session_replay_max_entries", 256),
+        replay_max_bytes=getattr(args, "session_replay_max_bytes", 67_108_864),
         keepalive_timeout=getattr(args, "session_server_keepalive_timeout", 5),
     )
